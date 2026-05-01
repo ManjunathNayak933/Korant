@@ -61,9 +61,9 @@ export function parseGeoFromRequest(req: Request) {
   const headers = req.headers
   return {
     country: headers.get('cf-ipcountry') || null,
-    city: headers.get('cf-ipcity') || null,
-    lat: headers.get('cf-iplat') ? parseFloat(headers.get('cf-iplat')!) : null,
-    lon: headers.get('cf-iplon') ? parseFloat(headers.get('cf-iplon')!) : null,
+    city: headers.get('cf-ipcity') || headers.get('x-vercel-ip-city') || null,
+    lat: headers.get('cf-iplatitude') ? parseFloat(headers.get('cf-iplatitude')!) : null,
+    lon: headers.get('cf-iplongitude') ? parseFloat(headers.get('cf-iplongitude')!) : null,
     ip: headers.get('cf-connecting-ip') || headers.get('x-forwarded-for') || null,
   }
 }
