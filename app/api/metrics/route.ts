@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     const sb = getSupabaseAdmin()
     let query = sb.from('events').select('*').eq('client_id', clientId)
     if (month) {
-      query = query.gte('timestamp', `${month}-01`).lt('timestamp', `${month}-32`)
+      const nextMonth = new Date(month + '-01'); nextMonth.setMonth(nextMonth.getMonth() + 1); const nextMonthStr = nextMonth.toISOString().slice(0,10); query = query.gte('timestamp', `${month}-01`).lt('timestamp', nextMonthStr)
     }
     if (campaignId) query = query.eq('campaign_id', campaignId)
 
