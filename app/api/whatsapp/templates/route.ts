@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
   const body = await request.json()
-  const { name, category = 'MARKETING', language = 'en', bodyText, headerText, footerText, buttonUrl } = body
+  const { name, category = 'MARKETING', language = 'en', bodyText, headerText, headerType, headerMediaId, footerText, buttonText, buttonUrl } = body
 
   if (!name || !bodyText) return NextResponse.json({ error: 'name and bodyText required' }, { status: 400 })
 
