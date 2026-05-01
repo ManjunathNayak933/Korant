@@ -1,0 +1,167 @@
+import { getSupabaseAdmin } from './supabase'
+
+const META_VERSION = 'v19.0'
+const META_BASE = `https://graph.facebook.com/${META_VERSION}`
+
+export interface WAConfig {
+  phone_number_id: string
+  access_token: string
+  waba_id?: string
+}
+
+export async function getWAConfig(clientId: string): Promise<WAConfig | null> {
+  const sb = getSupabaseAdmin()
+  const { data } = await sb
+    .from('whatsapp_configs')
+    .select('phone_number_id, access_token, waba_id, verified')
+    .eq('client_id', clientId)
+    .single()
+  if (!data?.verified) return null
+  return data
+}
+
+// ── Templates ──────────────────────────────────────────────────────────────
+
+export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) {
+  const res = await fetch(
+    `${META_BASE}/${config.phone_number_id}/message_templates?limit=50`,
+    { headers: { Authorization: `Bearer ${config.access_token}` } }
+  )
+  if (!res.ok) throw new Error(`Meta templates fetch failed: ${res.status}`)
+  const json = await res.json()
+  const templates = json.data || []
+
+  const sb = getSupabaseAdmin()
+  for (const t of templates) {
+    const bodyComp = t.components?.find((c: any) => c.type === 'BODY')
+    const headerComp = t.components?.find((c: any) => c.type === 'HEADER' && c.format === 'TEXT')
+    const footerComp = t.components?.find((c: any) => c.type === 'FOOTER')
+    const buttonComp = t.components?.find((c: any) => c.type === 'BUTTONS')
+    const bodyText = bodyComp?.text || ''
+    const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
+
+    await sb.from('whatsapp_templates').upsert({
+      client_id: clientId,
+      template_name: t.name,
+      category: t.category,
+      language: t.language,
+      status: t.status,
+      header_text: headerComp?.text || null,
+      body_text: bodyText,
+      footer_text: footerComp?.text || null,
+      has_buttons: !!buttonComp,
+      button_config: buttonComp || null,
+      variable_count: varCount,
+      meta_template_id: t.id,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'client_id,template_name,language' })
+  }
+  return templates.length
+}
+
+export async function submitTemplate(config: WAConfig, wabaId: string, template: {
+  name: string; category: string; language: string
+  bodyText: string; headerText?: string; footerText?: string
+  buttonText?: string; buttonUrl?: string; trackingUrl?: string
+}) {
+  const components: any[] = []
+  if (template.headerText) {
+    components.push({ type: 'HEADER', format: 'TEXT', text: template.headerText })
+  }
+  components.push({ type: 'BODY', text: template.bodyText })
+  if (template.footerText) {
+    components.push({ type: 'FOOTER', text: template.footerText })
+  }
+  if (template.buttonUrl) {
+    components.push({
+      type: 'BUTTONS',
+      buttons: [{
+        type: 'URL',
+        text: template.buttonText || 'Shop Now',
+        // {{1}} makes the URL dynamic so we can inject the tracking link at send time
+        url: template.buttonUrl.includes('{{1}}') ? template.buttonUrl : `${template.buttonUrl}/{{1}}`,
+      }],
+    })
+  }
+
+  const res = await fetch(`${META_BASE}/${wabaId}/message_templates`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: template.name.toLowerCase().replace(/\s+/g, '_'),
+      category: template.category,
+      language: template.language,
+      components,
+    }),
+  })
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.error?.message || 'Template submission failed')
+  return json
+}
+
+// ── Sending ────────────────────────────────────────────────────────────────
+
+export interface SendMessageParams {
+  to: string // phone number with country code, no +
+  templateName: string
+  language: string
+  variables: string[] // positional: {{1}}, {{2}}, ...
+  trackingUrl?: string
+}
+
+export async function sendTemplateMessage(
+  config: WAConfig,
+  params: SendMessageParams
+): Promise<{ wa_message_id: string } | { error: string }> {
+  const bodyParams = params.variables.map(v => ({ type: 'text', text: v }))
+
+  const body: any = {
+    messaging_product: 'whatsapp',
+    to: params.to.replace(/\D/g, ''),
+    type: 'template',
+    template: {
+      name: params.templateName,
+      language: { code: params.language },
+      components: bodyParams.length > 0
+        ? [{ type: 'body', parameters: bodyParams }]
+        : [],
+    },
+  }
+
+  const res = await fetch(`${META_BASE}/${config.phone_number_id}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  const json = await res.json()
+  if (!res.ok) return { error: json.error?.message || 'Send failed' }
+  return { wa_message_id: json.messages?.[0]?.id || '' }
+}
+
+// ── Estimate cost ──────────────────────────────────────────────────────────
+
+export function estimateCost(contactCount: number): { inr: number; conversations: number } {
+  // India rate: ~₹0.69 per marketing conversation (24h window)
+  const RATE_INR = 0.69
+  const FREE_TIER = 1000
+  const billable = Math.max(0, contactCount - FREE_TIER)
+  return {
+    inr: Math.round(billable * RATE_INR),
+    conversations: contactCount,
+  }
+}
+
+// ── Phone number verification ──────────────────────────────────────────────
+
+export async function verifyPhoneNumber(config: WAConfig): Promise<{ ok: boolean; display?: string }> {
+  const res = await fetch(`${META_BASE}/${config.phone_number_id}?fields=display_phone_number,verified_name`, {
+    headers: { Authorization: `Bearer ${config.access_token}` },
+  })
+  if (!res.ok) return { ok: false }
+  const json = await res.json()
+  return { ok: true, display: `${json.verified_name} (${json.display_phone_number})` }
+}
