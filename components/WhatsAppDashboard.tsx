@@ -6,7 +6,7 @@ import ChannelStatsBar from './ChannelStatsBar'
 
 interface WAConfig { phone_number_id?: string; phone_display?: string; verified?: boolean; monthly_conversations_used?: number }
 interface Template { id: string; template_name: string; status: string; body_text: string; header_text?: string; footer_text?: string; footer_text_raw?: string; variable_count: number; language: string; category: string; has_buttons: boolean; button_config?: { var_map?: Record<string, string>; button_text?: string; button_url?: string } }
-interface Campaign { id: string; name: string; template_name: string; list_name: string; total_contacts: number; sent: number; delivered: number; read: number; clicked: number; status: string; estimated_cost: number; sent_at?: string; tracking_slug: string; variable_map: any }
+interface Campaign { id: string; name: string; template_name: string; list_name: string; total_contacts: number; sent: number; delivered: number; read: number; clicked: number; sales: number; revenue: number; status: string; estimated_cost: number; sent_at?: string; tracking_slug: string; variable_map: any }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string }
 
 const STATUS_COLOR: Record<string, string> = {
