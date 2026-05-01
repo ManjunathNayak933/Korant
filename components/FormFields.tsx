@@ -1,7 +1,7 @@
 interface Props {
   label: string
   required?: boolean
-  children: React.ReactNode
+  children?: React.ReactNode
   hint?: string
 }
 
