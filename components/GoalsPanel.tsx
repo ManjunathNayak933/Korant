@@ -1,57 +1,140 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Modal from './Modal'
 import { FormField, Input, SubmitButton } from './FormFields'
 
-interface Goal { clicks?: number; sales?: number; revenue?: number; budget?: number }
-interface Props { goals: Goal; actual: { clicks: number; sales: number; revenue: number; budget: number }; clientId: string; month: string; onUpdated: (g: Goal) => void }
+interface Goals {
+  influencers?: number
+  seo_publications?: number
+  affiliates?: number
+  campaigns?: number
+  whatsapp_messages?: number
+}
 
-const BAR_COLOR = { clicks: '#4a9eff', sales: '#2ecc71', revenue: '#d4a843', budget: '#e74c3c' }
+interface Actuals {
+  influencers: number
+  seo_publications: number
+  affiliates: number
+  campaigns: number
+  whatsapp_messages: number
+}
 
-export default function GoalsPanel({ goals, actual, clientId, month, onUpdated }: Props) {
+interface Props {
+  clientId: string
+  month: string
+  goals: Goals
+  onUpdated: (g: Goals) => void
+}
+
+const ITEMS: { key: keyof Goals; label: string; color: string; icon: string; hint: string }[] = [
+  { key: 'influencers',      label: 'Influencers added',     color: 'var(--amber)', icon: '🎯', hint: 'New influencers onboarded this month' },
+  { key: 'seo_publications', label: 'SEO publications',      color: 'var(--blue)',  icon: '📄', hint: 'Articles / placements published' },
+  { key: 'affiliates',       label: 'Affiliates signed up',  color: 'var(--green)', icon: '🔗', hint: 'New affiliates or ambassadors' },
+  { key: 'campaigns',        label: 'Campaigns run',         color: '#9b59b6',      icon: '📢', hint: 'Active campaigns this month' },
+  { key: 'whatsapp_messages',label: 'WhatsApp messages sent',color: '#25d366',      icon: '💬', hint: 'Total messages across all WA campaigns' },
+]
+
+export default function GoalsPanel({ clientId, month, goals, onUpdated }: Props) {
   const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState<Goal>(goals)
+  const [form, setForm] = useState<Goals>(goals)
   const [loading, setLoading] = useState(false)
+  const [actuals, setActuals] = useState<Actuals>({ influencers: 0, seo_publications: 0, affiliates: 0, campaigns: 0, whatsapp_messages: 0 })
 
-  const items: { key: keyof Goal; label: string; fmt: (v: number) => string }[] = [
-    { key: 'clicks', label: 'Clicks', fmt: v => v.toLocaleString('en-IN') },
-    { key: 'sales', label: 'Sales', fmt: v => v.toLocaleString('en-IN') },
-    { key: 'revenue', label: 'Revenue', fmt: v => `₹${(v / 100000).toFixed(1)}L` },
-    { key: 'budget', label: 'Budget', fmt: v => `₹${(v / 100000).toFixed(1)}L` },
-  ]
+  // Load actual counts from the API
+  useEffect(() => {
+    const load = async () => {
+      const [infRes, pubRes, affRes, campRes, waRes] = await Promise.all([
+        fetch(`/api/influencers?clientId=${clientId}`),
+        fetch(`/api/publications?clientId=${clientId}`),
+        fetch(`/api/affiliates?clientId=${clientId}`),
+        fetch(`/api/campaigns?clientId=${clientId}`),
+        fetch(`/api/whatsapp/campaigns`),
+      ])
+      const [infs, pubs, affs, camps, waCamps] = await Promise.all([
+        infRes.json(), pubRes.json(), affRes.json(), campRes.json(), waRes.json(),
+      ])
+
+      // Count items created THIS month
+      const isThisMonth = (dateStr: string) =>
+        dateStr?.startsWith(month)
+
+      const waMessagesSent = Array.isArray(waCamps)
+        ? waCamps.filter((c: any) => c.status === 'sent' && isThisMonth(c.sent_at || '')).reduce((s: number, c: any) => s + (c.sent || 0), 0)
+        : 0
+
+      setActuals({
+        influencers:       Array.isArray(infs)  ? infs.filter((i: any)  => isThisMonth(i.created_at)).length  : 0,
+        seo_publications:  Array.isArray(pubs)  ? pubs.filter((p: any)  => isThisMonth(p.created_at)).length  : 0,
+        affiliates:        Array.isArray(affs)  ? affs.filter((a: any)  => isThisMonth(a.created_at)).length  : 0,
+        campaigns:         Array.isArray(camps) ? camps.filter((c: any) => isThisMonth(c.created_at)).length  : 0,
+        whatsapp_messages: waMessagesSent,
+      })
+    }
+    load()
+  }, [clientId, month])
+
+  // Sync form when goals prop changes
+  useEffect(() => { setForm(goals) }, [goals])
 
   const save = async () => {
     setLoading(true)
-    await fetch(`/api/clients/${clientId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goals: { ...(goals as any), [month]: form } }) })
+    const res = await fetch(`/api/clients/${clientId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goals: { ...(goals as any), [month]: form } }),
+    })
     setLoading(false)
-    onUpdated(form)
-    setEditing(false)
+    if (res.ok) {
+      onUpdated(form)
+      setEditing(false)
+    }
   }
 
   return (
     <>
-      <div style={{ background: '#111', border: '0.5px solid #1e1e1e', borderRadius: 10, padding: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
-            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#4a4642' }}>Monthly goals</span>
-            <span style={{ fontSize: 10, color: '#3a3632', marginLeft: 8 }}>{month}</span>
+            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Monthly targets</span>
+            <span style={{ fontSize: 10, color: 'var(--text-faint)', marginLeft: 8 }}>{month}</span>
           </div>
-          <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: '0.5px solid #2a2a2a', color: '#5a5652', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Edit targets</button>
+          <button
+            onClick={() => setEditing(true)}
+            style={{ background: 'transparent', border: '0.5px solid var(--border2)', color: 'var(--text-muted)', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}
+          >
+            Edit targets
+          </button>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {items.map(({ key, label, fmt }) => {
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {ITEMS.map(({ key, label, color, icon }) => {
             const target = goals[key] || 0
-            const value = actual[key] || 0
-            const pct = target > 0 ? Math.min((value / target) * 100, 100) : 0
+            const value  = actuals[key] || 0
+            const pct    = target > 0 ? Math.min((value / target) * 100, 100) : 0
+            const done   = target > 0 && value >= target
+
             return (
-              <div key={key} style={{ background: '#0a0a0a', border: '0.5px solid #1a1a1a', borderRadius: 6, padding: 11 }}>
-                <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#4a4642', marginBottom: 5 }}>{label}</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 7 }}>
-                  <span style={{ fontSize: 17, fontWeight: 500, color: '#e8e4dc' }}>{fmt(value)}</span>
-                  <span style={{ fontSize: 10, color: '#2a2622' }}>/ {target > 0 ? fmt(target) : '—'}</span>
+              <div key={key} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 7, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ fontSize: 13 }}>{icon}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
+                    {done && <span style={{ fontSize: 9, color, background: 'var(--surface)', border: `0.5px solid ${color}`, borderRadius: 3, padding: '1px 6px' }}>✓ Done</span>}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                    <span style={{ fontSize: 16, fontWeight: 500, color }}>{value}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>/ {target > 0 ? target : '—'}</span>
+                  </div>
                 </div>
-                <div style={{ height: 2, background: '#1a1a1a', borderRadius: 2, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${pct}%`, background: BAR_COLOR[key], borderRadius: 2 }} />
+                {/* Progress bar */}
+                <div style={{ height: 2, background: 'var(--border3)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${pct}%`,
+                    background: color,
+                    borderRadius: 2,
+                    transition: 'width 0.4s',
+                  }} />
                 </div>
               </div>
             )
@@ -60,17 +143,37 @@ export default function GoalsPanel({ goals, actual, clientId, month, onUpdated }
       </div>
 
       {editing && (
-        <Modal title="Set monthly targets" onClose={() => setEditing(false)}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {items.map(({ key, label }) => (
-              <FormField key={key} label={label}>
-                <Input type="number" value={form[key] || ''} onChange={e => setForm(f => ({ ...f, [key]: parseInt(e.target.value) || 0 }))} placeholder="0" />
+        <Modal title={`Set targets — ${month}`} onClose={() => setEditing(false)}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.6 }}>
+            Set how many of each you want to add or send this month. Leave at 0 to hide the progress bar.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {ITEMS.map(({ key, label, icon, hint }) => (
+              <FormField key={key} label={`${icon} ${label}`} hint={hint}>
+                <Input
+                  type="number"
+                  min="0"
+                  value={form[key] || ''}
+                  onChange={e => setForm(f => ({ ...f, [key]: parseInt(e.target.value) || 0 }))}
+                  placeholder="0"
+                />
               </FormField>
             ))}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
-            <button onClick={() => setEditing(false)} style={{ background: 'transparent', border: '0.5px solid #2a2a2a', color: '#5a5652', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-            <SubmitButton loading={loading} label="Save targets" loadingLabel="Saving…" />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+            <button
+              onClick={() => setEditing(false)}
+              style={{ background: 'transparent', border: '0.5px solid var(--border2)', color: 'var(--text-muted)', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={loading}
+              style={{ background: 'transparent', border: '0.5px solid var(--amber)', color: 'var(--amber)', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1 }}
+            >
+              {loading ? 'Saving…' : 'Save targets'}
+            </button>
           </div>
         </Modal>
       )}
