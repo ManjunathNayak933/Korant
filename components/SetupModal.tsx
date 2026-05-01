@@ -85,6 +85,12 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{completedCount} of {STEPS.length} completed</span>
           {completedCount === STEPS.length && <span style={{ fontSize: 11, color: 'var(--green)' }}>✓ All done</span>}
+          <button onClick={async () => {
+            const empty = {}
+            await fetch('/api/clients/goals', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ onboarding: empty }) })
+            setOnboarding(empty)
+            onSave(empty)
+          }} style={{ fontSize: 10, color: 'var(--text-muted)', background: 'transparent', border: '0.5px solid var(--border2)', borderRadius: 5, padding: '3px 8px', cursor: 'pointer', marginLeft: 8 }}>Reset</button>
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
           {STEPS.map(s => (

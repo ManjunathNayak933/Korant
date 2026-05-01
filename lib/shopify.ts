@@ -37,6 +37,15 @@ export async function createShopifyDiscountCode(
   if (!client) return null
 
   try {
+    // Check if discount code already exists — if so, return its existing price rule
+    try {
+      const existing = await shopifyFetch(client.shopify_domain, client.shopify_token,
+        `/discount_codes/lookup.json?code=${encodeURIComponent(discountCode)}`)
+      if (existing?.discount_code) {
+        return { priceRuleId: existing.discount_code.price_rule_id, discountCodeId: existing.discount_code.id }
+      }
+    } catch {} // code doesn't exist yet — proceed to create
+
     const valueType = fixedAmount ? 'fixed_amount' : 'percentage'
     const value = fixedAmount ? `-${fixedAmount}` : `-${percentOff}`
 
