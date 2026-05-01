@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { ensureUniqueSlug } from '@/lib/tracking'
 import { checkPlanLimit } from '@/lib/planLimits'
-import { createShopifyDiscountCode } from '@/lib/shopify'
+import { createShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
+import { createRazorpayOffer } from '@/lib/razorpay'
 
 export async function GET(request: NextRequest) {
   const role = request.headers.get('x-user-role')!
@@ -100,10 +101,14 @@ export async function POST(request: NextRequest) {
   // Try auto Shopify discount
   if (discountCode) {
     try {
-      const shopifyResult = await createShopifyDiscountCode(clientId, discountCode)
-      if (shopifyResult) {
-        await sb.from('affiliates').update({ shopify_price_rule_id: shopifyResult.priceRuleId }).eq('id', data.id)
-      }
+      const [shopifyResult, razorpayResult] = await Promise.allSettled([
+        createShopifyDiscountCode(clientId, discountCode),
+        createRazorpayOffer(clientId, discountCode),
+      ])
+      const updates: Record<string, unknown> = {}
+      if (shopifyResult.status === 'fulfilled' && shopifyResult.value) updates.shopify_price_rule_id = shopifyResult.value.priceRuleId
+      if (razorpayResult.status === 'fulfilled' && razorpayResult.value) updates.razorpay_offer_id = razorpayResult.value.offerId
+      if (Object.keys(updates).length > 0) await sb.from('affiliates').update(updates).eq('id', data.id)
     } catch {}
   }
 

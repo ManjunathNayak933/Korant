@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { generateSlug, ensureUniqueSlug } from '@/lib/tracking'
 import { checkPlanLimit } from '@/lib/planLimits'
-import { createShopifyDiscountCode } from '@/lib/shopify'
+import { createShopifyDiscountCode, updateShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
+import { createRazorpayOffer } from '@/lib/razorpay'
 import { cacheDel, listKey } from '@/lib/cache'
 
 export async function GET(request: NextRequest) {
@@ -75,12 +76,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // Try auto-create Shopify discount
+  // Auto-create discount codes on Shopify and Razorpay
   if (discountCode) {
     try {
-      const shopifyResult = await createShopifyDiscountCode(clientId, discountCode)
-      if (shopifyResult) {
-        await sb.from('influencers').update({ shopify_price_rule_id: shopifyResult.priceRuleId }).eq('id', data.id)
+      const [shopifyResult, razorpayResult] = await Promise.allSettled([
+        createShopifyDiscountCode(clientId, discountCode),
+        createRazorpayOffer(clientId, discountCode),
+      ])
+      const updates: Record<string, unknown> = {}
+      if (shopifyResult.status === 'fulfilled' && shopifyResult.value) {
+        updates.shopify_price_rule_id = shopifyResult.value.priceRuleId
+      }
+      if (razorpayResult.status === 'fulfilled' && razorpayResult.value) {
+        updates.razorpay_offer_id = razorpayResult.value.offerId
+      }
+      if (Object.keys(updates).length > 0) {
+        await sb.from('influencers').update(updates).eq('id', data.id)
       }
     } catch {}
   }
