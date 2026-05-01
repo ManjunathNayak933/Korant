@@ -1,4 +1,4 @@
-export const runtime = 'nodejs'
+export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { loginUser, buildAuthCookie, checkRateLimit } from '@/lib/auth'
