@@ -84,7 +84,7 @@ export async function GET(request: NextRequest) {
     alerts.push({ type: 'pending_payouts', message: `${pendingPayouts} pending payout(s) this month` })
   }
   for (const aff of (newAmbassadors || [])) {
-    items.unshift({ id: aff.id, type: 'ambassador_signup', timestamp: aff.created_at, entity_type: 'affiliate', name: aff.name, handle: aff.handle })
+    items.unshift({ id: aff.id, type: 'ambassador_signup', timestamp: aff.created_at, entity_type: 'affiliate', entity_id: aff.id, order_value: null, discount_code: aff.handle, commission_amount: null, city: null, platform: aff.name })
   }
 
   return NextResponse.json({ items, alerts })
