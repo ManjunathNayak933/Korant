@@ -34,7 +34,7 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
   const sb = getSupabaseAdmin()
   for (const t of templates) {
     const bodyComp = t.components?.find((c: any) => c.type === 'BODY')
-    const headerComp = t.components?.find((c: any) => c.type === 'HEADER' && c.format === 'TEXT')
+    const headerComp = t.components?.find((c: any) => c.type === 'HEADER')
     const footerComp = t.components?.find((c: any) => c.type === 'FOOTER')
     const buttonComp = t.components?.find((c: any) => c.type === 'BUTTONS')
     const bodyText = bodyComp?.text || ''
@@ -47,6 +47,8 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
       language: t.language,
       status: t.status,
       header_text: headerComp?.text || null,
+      header_type: headerComp?.format || null,
+      header_media_url: headerComp?.example?.header_handle?.[0] || null,
       body_text: bodyText,
       footer_text: footerComp?.text || null,
       has_buttons: !!buttonComp,
@@ -59,13 +61,50 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
   return templates.length
 }
 
+
+// ── Media upload ────────────────────────────────────────────────────────────
+
+export async function uploadMediaToMeta(
+  config: WAConfig,
+  fileBase64: string,
+  mimeType: string,
+  fileName: string
+): Promise<{ media_id: string } | { error: string }> {
+  // Convert base64 to blob via fetch data URL
+  const dataUrl = `data:${mimeType};base64,${fileBase64}`
+  const blobRes = await fetch(dataUrl)
+  const blob = await blobRes.blob()
+
+  const form = new FormData()
+  form.append('file', blob, fileName)
+  form.append('messaging_product', 'whatsapp')
+  form.append('type', mimeType)
+
+  const res = await fetch(`${META_BASE}/${config.phone_number_id}/media`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.access_token}` },
+    body: form,
+  })
+  const json = await res.json()
+  if (!res.ok) return { error: json.error?.message || 'Media upload failed' }
+  return { media_id: json.id }
+}
+
 export async function submitTemplate(config: WAConfig, wabaId: string, template: {
   name: string; category: string; language: string
   bodyText: string; headerText?: string; footerText?: string
   buttonText?: string; buttonUrl?: string; trackingUrl?: string
+  headerType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
+  headerMediaId?: string
 }) {
   const components: any[] = []
-  if (template.headerText) {
+  if (template.headerType && template.headerType !== 'TEXT' && template.headerMediaId) {
+    components.push({
+      type: 'HEADER',
+      format: template.headerType,
+      example: { header_handle: [template.headerMediaId] },
+    })
+  } else if (template.headerText) {
     components.push({ type: 'HEADER', format: 'TEXT', text: template.headerText })
   }
   components.push({ type: 'BODY', text: template.bodyText })

@@ -52,6 +52,8 @@ export async function POST(request: NextRequest) {
       language,
       status: 'PENDING',
       header_text: headerText || null,
+      header_type: headerType || 'TEXT',
+      header_media_id: headerMediaId || null,
       body_text: bodyText,
       footer_text: footerText || null,
       variable_count: varCount,

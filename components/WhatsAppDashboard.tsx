@@ -74,7 +74,8 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
   const [previewVars, setPreviewVars] = useState<string[]>([])
 
   // New template form
-  const [tmplForm, setTmplForm] = useState({ name: '', category: 'MARKETING', language: 'en', headerText: '', bodyText: '', footerText: '', buttonText: '', buttonUrl: '' })
+  const [tmplForm, setTmplForm] = useState({ name: '', category: 'MARKETING', language: 'en', headerType: 'TEXT', headerText: '', headerMediaId: '', headerMediaName: '', headerMediaPreview: '', bodyText: '', footerText: '', buttonText: '', buttonUrl: '' })
+  const [uploadingMedia, setUploadingMedia] = useState(false)
   const [tmplLoading, setTmplLoading] = useState(false)
   const [tmplError, setTmplError] = useState('')
 
@@ -837,7 +838,42 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
                 {/* Header */}
                 <div style={{ marginBottom: 10 }}>
                   <label style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: 4 }}>Header (optional)</label>
-                  <input value={tmplForm.headerText} onChange={e => setTmplForm(f => ({ ...f, headerText: e.target.value }))} placeholder="We've Announced 3 New Passes:" style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 6, color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', padding: '7px 10px', width: '100%', outline: 'none' }} />
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    {['TEXT','IMAGE','VIDEO','DOCUMENT'].map(t => (
+                      <button key={t} onClick={() => setTmplForm(f => ({ ...f, headerType: t, headerText: '', headerMediaId: '', headerMediaName: '', headerMediaPreview: '' }))}
+                        style={{ fontSize: 10, padding: '4px 10px', borderRadius: 5, border: '0.5px solid var(--border2)', background: tmplForm.headerType === t ? 'var(--amber)' : 'transparent', color: tmplForm.headerType === t ? '#000' : 'var(--text-muted)', cursor: 'pointer' }}>{t}</button>
+                    ))}
+                  </div>
+                  {tmplForm.headerType === 'TEXT' && (
+                    <input value={tmplForm.headerText} onChange={e => setTmplForm(f => ({ ...f, headerText: e.target.value }))} placeholder="We've Announced 3 New Passes:" style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 6, color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', padding: '7px 10px', width: '100%', outline: 'none' }} />
+                  )}
+                  {tmplForm.headerType !== 'TEXT' && (
+                    <div>
+                      <input type="file" accept={tmplForm.headerType === 'IMAGE' ? 'image/jpeg,image/png,image/webp' : tmplForm.headerType === 'VIDEO' ? 'video/mp4' : 'application/pdf'} style={{ display: 'none' }} id="wa-media-upload"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0]; if (!file) return
+                          setUploadingMedia(true)
+                          const reader = new FileReader()
+                          reader.onload = async (ev) => {
+                            const base64 = (ev.target?.result as string).split(',')[1]
+                            const res = await fetch('/api/whatsapp/media', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileBase64: base64, mimeType: file.type, fileName: file.name }) })
+                            const data = await res.json()
+                            if (data.media_id) {
+                              const preview = tmplForm.headerType === 'IMAGE' ? ev.target?.result as string : ''
+                              setTmplForm(f => ({ ...f, headerMediaId: data.media_id, headerMediaName: file.name, headerMediaPreview: preview }))
+                            } else { alert('Upload failed: ' + (data.error || 'Unknown')) }
+                            setUploadingMedia(false)
+                          }
+                          reader.readAsDataURL(file)
+                        }}
+                      />
+                      <label htmlFor="wa-media-upload" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 6, cursor: uploadingMedia ? 'wait' : 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
+                        {uploadingMedia ? '⏳ Uploading...' : tmplForm.headerMediaName ? `✓ ${tmplForm.headerMediaName}` : `📎 Upload ${tmplForm.headerType.toLowerCase()}`}
+                      </label>
+                      {tmplForm.headerMediaPreview && <img src={tmplForm.headerMediaPreview} alt="preview" style={{ marginTop: 8, maxWidth: '100%', maxHeight: 100, borderRadius: 6, objectFit: 'cover', display: 'block' }} />}
+                      {!tmplForm.headerMediaPreview && tmplForm.headerMediaId && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--green)' }}>✓ Uploaded to Meta</div>}
+                    </div>
+                  )}
                 </div>
 
                 {/* Body with formatting toolbar */}
