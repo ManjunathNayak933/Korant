@@ -6,7 +6,7 @@ import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
-interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; onCampaignAdd?: () => void }
+interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 
 const SORT_OPTIONS = [
   { value: 'clicks',  label: 'Clicks' },
@@ -14,7 +14,7 @@ const SORT_OPTIONS = [
   { value: 'revenue', label: 'Revenue' },
 ]
 
-export default function InfluencerChannelView({ clientId, campaigns, baseUrl, onCampaignAdd }: Props) {
+export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
   const [influencers, setInfluencers] = useState<Influencer[]>([])
   const [metrics, setMetrics] = useState<Record<string, any>>({})
   const [selectedCampaign, setSelectedCampaign] = useState('')
@@ -31,7 +31,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, on
       setLoading(true)
       const [infRes, metricsRes] = await Promise.all([
         fetch(`/api/influencers?clientId=${clientId}`),
-        fetch(`/api/metrics?clientId=${clientId}${selectedCampaign ? `&campaignId=${selectedCampaign}` : ''}`),
+        fetch(`/api/metrics?month=${month || new Date().toISOString().slice(0,7)}&clientId=${clientId}${selectedCampaign ? `&campaignId=${selectedCampaign}` : ''}`),
       ])
       if (cancelled) return
       const [infData, metricsData] = await Promise.all([infRes.json(), metricsRes.json()])
@@ -43,7 +43,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, on
     }
     load()
     return () => { cancelled = true }
-  }, [clientId, selectedCampaign])
+  }, [clientId, month, selectedCampaign])
 
   const toggleActive = async (id: string, current: boolean) => {
     await fetch(`/api/influencers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: !current }) })

@@ -10,11 +10,11 @@ import { FormField, Textarea, SubmitButton } from './FormFields'
 interface Affiliate { id: string; name: string; handle: string; email?: string; phone?: string; is_active: boolean; paused_at?: string; paused_reason?: string; source: string; redirect_slug: string; discount_code?: string; commission_type: string; commission_value: number; commission_trigger: string; created_at: string; campaign_id?: string }
 interface Program { id: string; name: string; commission_type: string; commission_value: number; commission_trigger: string; attribution_window_days: number; is_public: boolean; is_active: boolean }
 interface AffStats { clicks: number; sales: number; revenue: number; commission: number }
-interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; onCampaignAdd?: () => void }
+interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 
 type SortKey = 'clicks' | 'sales' | 'revenue' | 'commission'
 
-export default function AffiliateDashboard({ clientId, campaigns, baseUrl, onCampaignAdd }: Props) {
+export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
   const [subTab, setSubTab] = useState<'affiliates' | 'programs' | 'ambassadors'>('affiliates')
   const [affiliates, setAffiliates] = useState<Affiliate[]>([])
   const [programs, setPrograms] = useState<Program[]>([])
@@ -34,8 +34,8 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, onCam
     const load = async () => {
       setLoading(true)
       const url = selectedCampaign
-        ? `/api/metrics?clientId=${clientId}&campaignId=${selectedCampaign}`
-        : `/api/metrics?clientId=${clientId}`
+        ? `/api/metrics?clientId=${clientId}&month=${month || new Date().toISOString().slice(0,7)}&campaignId=${selectedCampaign}`
+        : `/api/metrics?clientId=${clientId}&month=${month || new Date().toISOString().slice(0,7)}`
       const [affRes, progRes, metricsRes] = await Promise.all([
         fetch(`/api/affiliates?clientId=${clientId}`),
         fetch(`/api/affiliate-programs?clientId=${clientId}`),
@@ -63,7 +63,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, onCam
     }
     load()
     return () => { cancelled = true }
-  }, [clientId, selectedCampaign])
+  }, [clientId, month, selectedCampaign])
 
   const pause = async () => {
     if (!pauseModal) return

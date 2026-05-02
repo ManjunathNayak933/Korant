@@ -5,9 +5,9 @@ import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
 
 interface Pub { id: string; publication_name: string; author_name?: string; type: string; article_url?: string; redirect_slug: string; destination_url: string; estimated_reach?: number; is_sponsored: boolean; published_at?: string; cost: number; is_active: boolean; campaign_id?: string }
-interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; onCampaignAdd?: () => void }
+interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 
-export default function SEODashboard({ clientId, campaigns, baseUrl, onCampaignAdd }: Props) {
+export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
   const [pubs, setPubs] = useState<Pub[]>([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
@@ -21,7 +21,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, onCampaignA
       setLoading(true)
       const [pubRes, metricsRes] = await Promise.all([
         fetch(`/api/publications?clientId=${clientId}`),
-        fetch(`/api/metrics?clientId=${clientId}${selectedCampaign ? `&campaignId=${selectedCampaign}` : ''}`),
+        fetch(`/api/metrics?month=${month || new Date().toISOString().slice(0,7)}&clientId=${clientId}${selectedCampaign ? `&campaignId=${selectedCampaign}` : ''}`),
       ])
       if (cancelled) return
       const [pubData, metricsData] = await Promise.all([pubRes.json(), metricsRes.json()])
@@ -39,7 +39,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, onCampaignA
     }
     load()
     return () => { cancelled = true }
-  }, [clientId, selectedCampaign])
+  }, [clientId, month, selectedCampaign])
 
   const copyLink = (slug: string) => {
     navigator.clipboard.writeText(`${baseUrl}/r/${slug}`)

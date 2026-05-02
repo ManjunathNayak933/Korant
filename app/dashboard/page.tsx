@@ -49,7 +49,16 @@ export default function DashboardPage() {
   const [showSetup, setShowSetup] = useState(false)
   const [overviewCampaign, setOverviewCampaign] = useState('')
 
-  const currentMonth = new Date().toISOString().slice(0, 7)
+  // Generate last 3 months including current
+  const monthOptions = Array.from({ length: 3 }, (_, i) => {
+    const d = new Date()
+    d.setDate(1)
+    d.setMonth(d.getMonth() - i)
+    const val = d.toISOString().slice(0, 7)
+    const label = d.toLocaleString('default', { month: 'long', year: 'numeric' })
+    return { val, label }
+  })
+  const [currentMonth, setCurrentMonth] = useState(monthOptions[0].val)
 
   // Re-fetch metrics when user returns to overview (picks up new clicks)
   useEffect(() => {
@@ -152,6 +161,20 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Global month picker — visible on all tabs */}
+      <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface)' }}>
+        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 4 }}>Period:</span>
+        {monthOptions.map(m => (
+          <button key={m.val} onClick={() => setCurrentMonth(m.val)}
+            style={{ padding: '4px 14px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: currentMonth === m.val ? 500 : 400 }}>
+            {m.label}
+          </button>
+        ))}
+        <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-dim)' }}>
+          {currentMonth === monthOptions[0].val ? '← current month' : `← ${monthOptions[0].label}`}
+        </span>
+      </div>
+
       <div style={{ padding: '0 24px' }}>
 
         {/* ─── OVERVIEW ─── */}
@@ -164,7 +187,7 @@ export default function DashboardPage() {
               {campaigns.map(camp => (
                 <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${overviewCampaign === camp.id ? 'var(--amber)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
               ))}
-              {overviewCampaign && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}> -showing filtered data</span>}
+              {overviewCampaign && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>— showing filtered data</span>}
             </div>
 
             {/* KPI rows */}
@@ -220,7 +243,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet - share your tracking links" height={100} />
+              <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
               <MiniBarChart title="Revenue by channel (₹)" bars={revBars} emptyMessage="No attributed revenue yet" height={100} />
 
               {/* Top influencers */}
@@ -258,25 +281,25 @@ export default function DashboardPage() {
 
         {activeTab === 'influencer' && (
           <div style={{ padding: '24px 0' }}>
-            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'seo' && (
           <div style={{ padding: '24px 0' }}>
-            <SEODashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <SEODashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'affiliate' && (
           <div style={{ padding: '24px 0' }}>
-            <AffiliateDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <AffiliateDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'whatsapp' && (
           <div style={{ padding: '24px 0' }}>
-            <WhatsAppDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} />
+            <WhatsAppDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} />
           </div>
         )}
 

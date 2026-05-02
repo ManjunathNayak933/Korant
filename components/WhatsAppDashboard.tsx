@@ -7,7 +7,7 @@ import ChannelStatsBar from './ChannelStatsBar'
 interface WAConfig { phone_number_id?: string; phone_display?: string; verified?: boolean; monthly_conversations_used?: number }
 interface Template { id: string; template_name: string; status: string; body_text: string; header_text?: string; footer_text?: string; footer_text_raw?: string; variable_count: number; language: string; category: string; has_buttons: boolean; button_config?: { var_map?: Record<string, string>; button_text?: string; button_url?: string } }
 interface Campaign { id: string; name: string; template_name: string; list_name: string; total_contacts: number; sent: number; delivered: number; read: number; clicked: number; sales: number; revenue: number; status: string; estimated_cost: number; sent_at?: string; tracking_slug: string; variable_map: any }
-interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string }
+interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string }
 
 const STATUS_COLOR: Record<string, string> = {
   APPROVED: 'var(--green)', PENDING: 'var(--amber)', REJECTED: 'var(--red)', PAUSED: 'var(--text-dim)',
@@ -44,7 +44,7 @@ function varLabel(name: string): string {
   return labels[name] || name.replace(/_/g, ' ')
 }
 
-export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Props) {
+export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month }: Props) {
   const [subTab, setSubTab] = useState<'campaigns' | 'templates' | 'contacts' | 'settings'>('campaigns')
   const [config, setConfig] = useState<WAConfig>({})
   const [templates, setTemplates] = useState<Template[]>([])
@@ -90,7 +90,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
     const [cfgRes, tmplRes, campRes, ctcRes] = await Promise.all([
       fetch('/api/whatsapp/connect'),
       fetch('/api/whatsapp/templates'),
-      fetch('/api/whatsapp/campaigns'),
+      fetch(`/api/whatsapp/campaigns?month=${month || new Date().toISOString().slice(0,7)}`),
       fetch('/api/whatsapp/contacts'),
     ])
     const [cfg, tmpls, camps, ctc] = await Promise.all([cfgRes.json(), tmplRes.json(), campRes.json(), ctcRes.json()])
@@ -101,7 +101,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [month])
 
   const connectWA = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -242,7 +242,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
         <div style={{ background: 'var(--amber-bg)', border: '0.5px solid var(--amber-border)', borderRadius: 9, padding: '14px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--amber)', marginBottom: 3 }}>WhatsApp not connected</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Connect your Meta WhatsApp Business API to start sending campaigns directly from MicroKorant.</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Connect your Meta WhatsApp Business API to start sending campaigns directly from Korant.</div>
           </div>
           <button onClick={() => setSubTab('settings')} style={{ border: '0.5px solid var(--amber)', color: 'var(--amber)', background: 'transparent', borderRadius: 7, padding: '7px 16px', fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>Connect now →</button>
         </div>
@@ -263,7 +263,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
       {/* ── CAMPAIGNS ── */}
       {subTab === 'campaigns' && (
         <div>
-          {/* Always-visible stats bar - shows zeros when no data */}
+          {/* Always-visible stats bar — shows zeros when no data */}
           {(() => {
             const sent      = wayCampaigns.reduce((s,w) => s + (w.sent      ||0), 0)
             const delivered = wayCampaigns.reduce((s,w) => s + (w.delivered ||0), 0)
@@ -373,7 +373,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
             <div style={{ textAlign: 'center', padding: 60, border: '0.5px dashed var(--border2)', borderRadius: 10 }}>
               <div style={{ fontSize: 24, marginBottom: 12 }}>💬</div>
               <div style={{ fontSize: 14, color: 'var(--text-dim)', marginBottom: 12 }}>No WhatsApp campaigns yet</div>
-              <div style={{ fontSize: 12, color: 'var(--text-faint)', maxWidth: 360, margin: '0 auto 16px' }}>Create a campaign, pick a template and a contact list, and send directly from MicroKorant - no Wati or Interakt needed.</div>
+              <div style={{ fontSize: 12, color: 'var(--text-faint)', maxWidth: 360, margin: '0 auto 16px' }}>Create a campaign, pick a template and a contact list, and send directly from Korant — no Wati or Interakt needed.</div>
               {isConnected && <button onClick={() => setShowNewCampaign(true)} style={{ border: '0.5px solid var(--green)', color: 'var(--green)', background: 'transparent', borderRadius: 7, padding: '8px 18px', fontSize: 13, cursor: 'pointer' }}>Create first campaign</button>}
             </div>
           ) : (
@@ -944,7 +944,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
                       <input value={tmplForm.buttonUrl} onChange={e => { let v = e.target.value.trim(); if (v && !v.startsWith('https://')) v = 'https://' + v; setTmplForm(f => ({ ...f, buttonUrl: v })) }} placeholder="https://yourbrand.com/event" style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)', borderRadius: 5, color: 'var(--text-primary)', fontSize: 11, fontFamily: 'inherit', padding: '6px 8px', width: '100%', outline: 'none' }} />
                     </div>
                   </div>
-                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 6 }}>mICROKorant wraps this URL with a tracking link automatically. Every click is recorded in your dashboard.</div>
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 6 }}>Korant wraps this URL with a tracking link automatically. Every click is recorded in your dashboard.</div>
                 </div>
 
                 {tmplError && <div style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{tmplError}</div>}
