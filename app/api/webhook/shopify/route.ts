@@ -13,7 +13,8 @@ async function verifyShopifyHmac(body: string, hmacHeader: string, secret: strin
 
 export async function POST(request: NextRequest) {
   const body = await request.text()
-  const hmacHeader = request.headers.get('x-shopify-hmac-sha256') || ''
+  // Accept both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 format (API 2026-01+)
+  const hmacHeader = request.headers.get('x-shopify-hmac-sha256') || request.headers.get('shopify-hmac-sha256') || ''
   const shopifyDomain = request.headers.get('x-shopify-shop-domain') || ''
 
   const sb = getSupabaseAdmin()

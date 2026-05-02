@@ -1,7 +1,7 @@
 import { getSupabaseAdmin } from './supabase'
 
 async function shopifyFetch(domain: string, token: string, path: string, method = 'GET', body?: unknown) {
-  const res = await fetch(`https://${domain}/admin/api/2024-01${path}`, {
+  const res = await fetch(`https://${domain}/admin/api/2026-04${path}`, {
     method,
     headers: {
       'X-Shopify-Access-Token': token,
@@ -51,7 +51,7 @@ export async function createShopifyDiscountCode(
 
     const ruleRes = await shopifyFetch(client.shopify_domain, client.shopify_token, '/price_rules.json', 'POST', {
       price_rule: {
-        title: `MICROKORANT-${discountCode}`,
+        title: `KORANT-${discountCode}`,
         target_type: 'line_item',
         target_selection: 'all',
         allocation_method: 'across',
@@ -94,7 +94,7 @@ export async function updateShopifyDiscountCode(
       `/price_rules/${priceRuleId}.json`, 'PUT', {
         price_rule: {
           id: priceRuleId,
-          title: `MICROKORANT-${newCode}`,
+          title: `KORANT-${newCode}`,
           value: `-${percentOff}`,
         }
       }
@@ -138,6 +138,18 @@ export async function deleteShopifyPriceRule(
   }
 }
 
-export function verifyShopifyWebhook(body: string, hmacHeader: string, secret: string): boolean {
-  return true // placeholder
+export async function verifyShopifyWebhook(request: Request, secret: string): Promise<boolean> {
+  const body = await request.text()
+  // Support both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 header formats (2026-01+)
+  const hmac = request.headers.get('X-Shopify-Hmac-Sha256') 
+    || request.headers.get('x-shopify-hmac-sha256')
+    || request.headers.get('shopify-hmac-sha256')
+    || ''
+  if (!hmac) return false
+
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(body))
+  const computed = btoa(String.fromCharCode(...new Uint8Array(sig)))
+  return computed === hmac
 }
