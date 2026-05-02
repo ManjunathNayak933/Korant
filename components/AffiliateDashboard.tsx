@@ -139,7 +139,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
       </div>
 
       {/* Channel KPI + charts — reacts to campaign filter */}
-      {subTab === 'affiliates' && <ChannelStatsBar clientId={clientId} channel="affiliate" campaignId={selectedCampaign} />}
+      {subTab === 'affiliates' && <ChannelStatsBar clientId={clientId} channel="affiliate" campaignId={selectedCampaign} month={month} />}
       {loading ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
           {[1,2,3].map(i => <div key={i} style={{ height: 120, background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, opacity: 0.4 }} />)}

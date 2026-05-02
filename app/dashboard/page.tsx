@@ -161,33 +161,39 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Global month picker — visible on all tabs */}
-      <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6, background: 'var(--surface)' }}>
-        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 4 }}>Period:</span>
-        {monthOptions.map(m => (
-          <button key={m.val} onClick={() => setCurrentMonth(m.val)}
-            style={{ padding: '4px 14px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: currentMonth === m.val ? 500 : 400 }}>
-            {m.label}
-          </button>
-        ))}
-        <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-dim)' }}>
-          {currentMonth === monthOptions[0].val ? '← current month' : `← ${monthOptions[0].label}`}
-        </span>
-      </div>
+      {/* Month picker bar — visible on all non-overview tabs */}
+      {activeTab !== 'overview' && (
+        <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 2 }}>Period:</span>
+          {monthOptions.map(m => (
+            <button key={m.val} onClick={() => setCurrentMonth(m.val)}
+              style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div style={{ padding: '0 24px' }}>
 
         {/* ─── OVERVIEW ─── */}
         {activeTab === 'overview' && (
           <>
-            {/* Campaign filter for overview */}
-            <div style={{ padding: '12px 0', borderBottom: '0.5px solid var(--border)', margin: '0 -24px', paddingLeft: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Campaign:</span>
-              <button onClick={() => setOverviewCampaign('')} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${!overviewCampaign ? 'var(--amber)' : 'var(--border2)'}`, background: 'transparent', color: !overviewCampaign ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>All</button>
-              {campaigns.map(camp => (
-                <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${overviewCampaign === camp.id ? 'var(--amber)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
+            {/* Combined Period + Campaign filter strip */}
+            <div style={{ padding: '10px 0', borderBottom: '0.5px solid var(--border)', margin: '0 -24px', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Period:</span>
+              {monthOptions.map(m => (
+                <button key={m.val} onClick={() => setCurrentMonth(m.val)}
+                  style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>
+                  {m.label}
+                </button>
               ))}
-              {overviewCampaign && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>— showing filtered data</span>}
+              <div style={{ width: '0.5px', height: 16, background: 'var(--border2)', margin: '0 4px' }} />
+              <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Campaign:</span>
+              <button onClick={() => setOverviewCampaign('')} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${!overviewCampaign ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: !overviewCampaign ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>All</button>
+              {campaigns.map(camp => (
+                <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${overviewCampaign === camp.id ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
+              ))}
             </div>
 
             {/* KPI rows */}

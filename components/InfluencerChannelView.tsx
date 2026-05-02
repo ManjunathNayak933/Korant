@@ -73,7 +73,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
   return (
     <div>
       {/* Channel-specific KPI + charts — reacts to campaign filter */}
-      <ChannelStatsBar clientId={clientId} channel="influencer" campaignId={selectedCampaign} />
+      <ChannelStatsBar clientId={clientId} channel="influencer" campaignId={selectedCampaign} month={month} />
 
       {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>

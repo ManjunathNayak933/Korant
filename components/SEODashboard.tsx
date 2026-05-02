@@ -56,7 +56,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
   return (
     <div>
       {/* Channel KPI + charts — reacts to campaign filter */}
-      <ChannelStatsBar clientId={clientId} channel="seo" campaignId={selectedCampaign} />
+      <ChannelStatsBar clientId={clientId} channel="seo" campaignId={selectedCampaign} month={month} />
 
       {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>

@@ -7,12 +7,13 @@ interface Props {
   clientId: string
   channel: 'influencer' | 'seo' | 'affiliate'
   campaignId?: string
+  month?: string
 }
 
 const CHANNEL_LABEL = { influencer: 'Influencer', seo: 'SEO & Publications', affiliate: 'Affiliate' }
 const CHANNEL_COLOR = { influencer: 'var(--amber)', seo: 'var(--blue)', affiliate: 'var(--green)' }
 
-export default function ChannelStatsBar({ clientId, channel, campaignId }: Props) {
+export default function ChannelStatsBar({ clientId, channel, campaignId, month }: Props) {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
@@ -20,7 +21,8 @@ export default function ChannelStatsBar({ clientId, channel, campaignId }: Props
     let cancelled = false
     const load = async () => {
       setLoading(true)
-      const url = `/api/metrics?clientId=${clientId}${campaignId ? `&campaignId=${campaignId}` : ''}${campaignId ? '&noCache=1' : ''}`
+      const m = month || new Date().toISOString().slice(0,7)
+      const url = `/api/metrics?clientId=${clientId}&month=${m}${campaignId ? `&campaignId=${campaignId}&noCache=1` : ''}`
       const res = await fetch(url)
       if (cancelled) return
       const data = await res.json()
@@ -29,7 +31,7 @@ export default function ChannelStatsBar({ clientId, channel, campaignId }: Props
     }
     load()
     return () => { cancelled = true }
-  }, [clientId, campaignId])
+  }, [clientId, campaignId, month])
 
   if (loading) {
     return (
@@ -97,7 +99,7 @@ export default function ChannelStatsBar({ clientId, channel, campaignId }: Props
             { label: 'Clicks',  value: allClicks, color },
             { label: 'Sales',   value: allSales,  color: 'var(--green)' },
           ]}
-          emptyMessage="No data yet - add tracking links"
+          emptyMessage="No data yet — add tracking links"
           height={80}
         />
 
