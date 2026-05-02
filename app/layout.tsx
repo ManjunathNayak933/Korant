@@ -3,7 +3,7 @@ import './globals.css'
 import { ThemeProvider } from '@/components/ThemeProvider'
 
 export const metadata: Metadata = {
-  title: 'Korant — Attribution Platform',
+  title: 'MicroKorant | Know Your Channel',
   description: 'Track influencer, SEO, and affiliate performance.',
 }
 

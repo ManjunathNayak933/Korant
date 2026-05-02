@@ -164,7 +164,7 @@ export default function DashboardPage() {
               {campaigns.map(camp => (
                 <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${overviewCampaign === camp.id ? 'var(--amber)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
               ))}
-              {overviewCampaign && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>— showing filtered data</span>}
+              {overviewCampaign && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}> -showing filtered data</span>}
             </div>
 
             {/* KPI rows */}
@@ -220,7 +220,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
+              <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet - share your tracking links" height={100} />
               <MiniBarChart title="Revenue by channel (₹)" bars={revBars} emptyMessage="No attributed revenue yet" height={100} />
 
               {/* Top influencers */}
