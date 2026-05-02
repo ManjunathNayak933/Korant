@@ -97,7 +97,7 @@ export default function ChannelStatsBar({ clientId, channel, campaignId }: Props
             { label: 'Clicks',  value: allClicks, color },
             { label: 'Sales',   value: allSales,  color: 'var(--green)' },
           ]}
-          emptyMessage="No data yet — add tracking links"
+          emptyMessage="No data yet - add tracking links"
           height={80}
         />
 

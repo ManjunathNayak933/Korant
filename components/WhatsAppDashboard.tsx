@@ -263,7 +263,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
       {/* ── CAMPAIGNS ── */}
       {subTab === 'campaigns' && (
         <div>
-          {/* Always-visible stats bar — shows zeros when no data */}
+          {/* Always-visible stats bar - shows zeros when no data */}
           {(() => {
             const sent      = wayCampaigns.reduce((s,w) => s + (w.sent      ||0), 0)
             const delivered = wayCampaigns.reduce((s,w) => s + (w.delivered ||0), 0)
@@ -944,7 +944,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl }: Prop
                       <input value={tmplForm.buttonUrl} onChange={e => { let v = e.target.value.trim(); if (v && !v.startsWith('https://')) v = 'https://' + v; setTmplForm(f => ({ ...f, buttonUrl: v })) }} placeholder="https://yourbrand.com/event" style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)', borderRadius: 5, color: 'var(--text-primary)', fontSize: 11, fontFamily: 'inherit', padding: '6px 8px', width: '100%', outline: 'none' }} />
                     </div>
                   </div>
-                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 6 }}>MicroKorant wraps this URL with a tracking link automatically. Every click is recorded in your dashboard.</div>
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 6 }}>mICROKorant wraps this URL with a tracking link automatically. Every click is recorded in your dashboard.</div>
                 </div>
 
                 {tmplError && <div style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{tmplError}</div>}
