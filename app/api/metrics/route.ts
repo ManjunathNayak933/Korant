@@ -39,11 +39,19 @@ export async function GET(request: NextRequest) {
     const codeSales = sales.filter((e: any) => e.type === 'code_sale')
     const revenue = sales.reduce((s: number, e: any) => s + (e.order_value || 0), 0)
 
-    let infQuery = sb.from('influencers').select('id, name, handle, fee').eq('client_id', clientId)
-    let pubQuery = sb.from('publications').select('id, publication_name, cost').eq('client_id', clientId)
+    let infQuery = sb.from('influencers').select('id, name, handle, fee, created_at').eq('client_id', clientId)
+    let pubQuery = sb.from('publications').select('id, publication_name, cost, created_at').eq('client_id', clientId)
     if (campaignId) {
       infQuery = infQuery.eq('campaign_id', campaignId)
       pubQuery = pubQuery.eq('campaign_id', campaignId)
+    }
+    // Filter budget by month — only count fees/costs for influencers/publications added that month
+    if (month) {
+      const nextMonth = new Date(month + '-01')
+      nextMonth.setMonth(nextMonth.getMonth() + 1)
+      const nextMonthStr = nextMonth.toISOString().slice(0,10)
+      infQuery = infQuery.gte('created_at', `${month}-01`).lt('created_at', nextMonthStr)
+      pubQuery = pubQuery.gte('created_at', `${month}-01`).lt('created_at', nextMonthStr)
     }
 
     const [infRes, pubRes, affRes] = await Promise.all([infQuery, pubQuery,
