@@ -51,7 +51,7 @@ export async function createShopifyDiscountCode(
 
     const ruleRes = await shopifyFetch(client.shopify_domain, client.shopify_token, '/price_rules.json', 'POST', {
       price_rule: {
-        title: `KORANT-${discountCode}`,
+        title: `MICROKORANT-${discountCode}`,
         target_type: 'line_item',
         target_selection: 'all',
         allocation_method: 'across',
@@ -94,7 +94,7 @@ export async function updateShopifyDiscountCode(
       `/price_rules/${priceRuleId}.json`, 'PUT', {
         price_rule: {
           id: priceRuleId,
-          title: `KORANT-${newCode}`,
+          title: `MICROKORANT-${newCode}`,
           value: `-${percentOff}`,
         }
       }

@@ -54,7 +54,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
   await sb.from('agency_handlers').delete().eq('client_id', userId).eq('agency_id', req.agency_id)
   await sb.from('agency_requests').update({ status: 'rejected', updated_at: new Date().toISOString() }).eq('id', (await params).id)
-  await sb.from('clients').update({ managed_by: 'korant', updated_at: new Date().toISOString() }).eq('id', userId)
+  await sb.from('clients').update({ managed_by: 'MicroKorant', updated_at: new Date().toISOString() }).eq('id', userId)
 
   return NextResponse.json({ ok: true })
 }

@@ -40,7 +40,7 @@ export async function createRazorpayOffer(
   try {
     // Create an offer (coupon) in Razorpay
     const res = await razorpayFetch(creds.keyId, creds.keySecret, '/offers', 'POST', {
-      name: description || `Korant - ${couponCode}`,
+      name: description || `MicroKorant - ${couponCode}`,
       payment_offer: {
         type: 'instant',
         value: discountPercent * 100, // in paise percent points

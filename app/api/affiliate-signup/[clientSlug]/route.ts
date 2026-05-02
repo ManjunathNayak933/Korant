@@ -93,7 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       email: email.toLowerCase(),
       phone: body.phone || null,
       redirect_slug,
-      destination_url: body.destination_url || 'https://korant.app',
+      destination_url: body.destination_url || 'https://www.microkorant.in',
       discount_code,
       commission_type: program.commission_type,
       commission_value: program.commission_value,

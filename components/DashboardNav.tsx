@@ -24,7 +24,7 @@ export default function DashboardNav({ user, actions = [], brandName, onRefresh 
   return (
     <nav style={{ background: 'var(--bg)', borderBottom: '0.5px solid var(--border)', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 54, position: 'sticky', top: 0, zIndex: 40 }}>
       <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
-        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>korant</span>
+        <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>MicroKorant</span>
         <span style={{ fontSize: 10, color: 'var(--text-faint)', letterSpacing: '0.3px' }}>{brandName || 'Dashboard'}</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>

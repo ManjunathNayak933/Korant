@@ -48,7 +48,7 @@ export default function OnboardingPage() {
     else router.push('/dashboard')
   }
 
-  const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://app.korant.in'
+  const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
 
   return (
     <div style={{ minHeight: '100vh', background: '#0d0d0d', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -77,7 +77,7 @@ export default function OnboardingPage() {
                 <div style={{ marginBottom: 6, color: '#4a4642', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.4px' }}>DNS record to add</div>
                 <div><span style={{ color: '#3a3632' }}>Type:</span> CNAME</div>
                 <div><span style={{ color: '#3a3632' }}>Name:</span> track</div>
-                <div><span style={{ color: '#3a3632' }}>Value:</span> <span style={{ color: '#d4a843', fontFamily: 'monospace' }}>cname.korant.app</span></div>
+                <div><span style={{ color: '#3a3632' }}>Value:</span> <span style={{ color: '#d4a843', fontFamily: 'monospace' }}>cname.microkorant.in</span></div>
               </div>
             </div>
           )}

@@ -79,7 +79,7 @@ export default function AdminClientDetailPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div style={{ background: '#111', border: '0.5px solid #1e1e1e', borderRadius: 10, padding: 18 }}>
                 <div style={{ fontSize: 12, fontWeight: 500, color: '#c8c4bc', marginBottom: 14 }}>Account details</div>
-                {[['Affiliate slug', client?.affiliate_slug], ['Custom domain', client?.custom_domain || '—'], ['Shopify domain', client?.shopify_domain || '—'], ['Managed by', client?.managed_by || 'korant'], ['Created', new Date(client?.created_at).toLocaleDateString('en-IN')]].map(([l, v]) => (
+                {[['Affiliate slug', client?.affiliate_slug], ['Custom domain', client?.custom_domain || '—'], ['Shopify domain', client?.shopify_domain || '—'], ['Managed by', client?.managed_by || 'MicroKorant'], ['Created', new Date(client?.created_at).toLocaleDateString('en-IN')]].map(([l, v]) => (
                   <div key={l} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 9, borderBottom: '0.5px solid #141414', paddingBottom: 9 }}>
                     <span style={{ fontSize: 11, color: '#4a4642' }}>{l}</span>
                     <span style={{ fontSize: 12, color: '#c8c4bc' }}>{v}</span>

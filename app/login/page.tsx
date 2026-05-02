@@ -33,7 +33,7 @@ export default function LoginPage() {
       {/* Left panel */}
       <div style={{ flex: 1, display: 'none', padding: '60px 60px', flexDirection: 'column', justifyContent: 'space-between', borderRight: '0.5px solid #1e1e1e' }} className="login-left">
         <div>
-          <div style={{ fontSize: 18, fontWeight: 500, color: '#e8e4dc', marginBottom: 6 }}>korant</div>
+          <div style={{ fontSize: 18, fontWeight: 500, color: '#e8e4dc', marginBottom: 6 }}>MicroKorant</div>
           <div style={{ fontSize: 12, color: '#3a3632' }}>Attribution Platform</div>
         </div>
         <div>
@@ -47,14 +47,14 @@ export default function LoginPage() {
             ))}
           </div>
         </div>
-        <div style={{ fontSize: 11, color: '#2a2622' }}>© 2025 Korant · All rights reserved</div>
+        <div style={{ fontSize: 11, color: '#2a2622' }}>© 2026 MicroKorant · All rights reserved</div>
       </div>
 
       {/* Right panel */}
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <div style={{ width: '100%', maxWidth: 360 }}>
           <div style={{ marginBottom: 32 }}>
-            <div style={{ fontSize: 22, fontWeight: 500, color: '#e8e4dc', marginBottom: 6 }}>korant</div>
+            <div style={{ fontSize: 22, fontWeight: 500, color: '#e8e4dc', marginBottom: 6 }}>MicroKorant</div>
             <div style={{ fontSize: 13, color: '#4a4642' }}>Sign in to your account</div>
           </div>
 
@@ -102,7 +102,7 @@ export default function LoginPage() {
 
           <div style={{ marginTop: 32, padding: '16px', background: '#0a0a0a', border: '0.5px solid #1a1a1a', borderRadius: 8 }}>
             <div style={{ fontSize: 11, color: '#3a3632', marginBottom: 8 }}>Don't have an account?</div>
-            <div style={{ fontSize: 12, color: '#5a5652' }}>Contact your Korant administrator or submit a signup request.</div>
+            <div style={{ fontSize: 12, color: '#5a5652' }}>Contact your MicroKorant administrator or submit a signup request.</div>
           </div>
         </div>
       </div>

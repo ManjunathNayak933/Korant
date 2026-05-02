@@ -40,7 +40,7 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   const [domain, setDomain] = useState(user?.custom_domain || '')
   const [saving, setSaving] = useState<string | null>(null)
   const [activeStep, setActiveStep] = useState<string | null>(null)
-  const BASE = typeof window !== 'undefined' ? window.location.origin : 'https://app.korant.in'
+  const BASE = typeof window !== 'undefined' ? window.location.origin : 'https://app.microkorant.in'
   const clientId = user?.id || ''
 
   const mark = async (doneKey: string, skipKey?: string, extra?: Record<string, any>) => {

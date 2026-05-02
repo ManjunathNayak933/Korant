@@ -15,7 +15,7 @@ export async function GET(
   const found = await findEntityBySlug(slug)
   if (!found) {
     return NextResponse.redirect(
-      new URL('/', process.env.NEXT_PUBLIC_BASE_URL || 'https://korant.app'), 302
+      new URL('/', process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'), 302
     )
   }
 

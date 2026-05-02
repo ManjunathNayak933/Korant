@@ -1,4 +1,4 @@
--- Korant SaaS Platform — Supabase Schema
+-- MicroKorant SaaS Platform — Supabase Schema
 -- Run this in your Supabase SQL editor
 
 -- Clients
@@ -8,7 +8,7 @@ create table if not exists clients (
   email text unique not null,
   password_hash text not null,
   client_type text default 'saas',
-  managed_by text default 'korant',
+  managed_by text default 'MicroKorant',
   custom_domain text,
   affiliate_slug text unique,
   webhook_secret text,
@@ -295,7 +295,7 @@ create table if not exists whatsapp_configs (
   updated_at timestamptz default now()
 );
 
--- Templates synced from Meta (or submitted via Korant)
+-- Templates synced from Meta (or submitted via MicroKorant)
 create table if not exists whatsapp_templates (
   id uuid primary key default gen_random_uuid(),
   client_id uuid references clients(id) on delete cascade,
