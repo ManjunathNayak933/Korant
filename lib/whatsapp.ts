@@ -93,7 +93,7 @@ export async function uploadMediaToMeta(
 export async function submitTemplate(config: WAConfig, wabaId: string, template: {
   name: string; category: string; language: string
   bodyText: string; headerText?: string; footerText?: string
-  buttonText?: string; buttonUrl?: string; trackingUrl?: string
+  buttonText?: string; buttonUrl?: string; trackingUrl?: string; trackingBase?: string; exampleSlug?: string
   headerType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
   headerMediaId?: string
 }) {
@@ -112,13 +112,17 @@ export async function submitTemplate(config: WAConfig, wabaId: string, template:
     components.push({ type: 'FOOTER', text: template.footerText })
   }
   if (template.buttonUrl) {
+    // Always use {{1}} as the dynamic URL variable — tracking slug injected at send time
+    // Meta requires the base domain to be fixed; we use the tracking endpoint as base
+    const baseTrackingUrl = template.trackingBase || template.buttonUrl
+    const dynamicUrl = baseTrackingUrl.includes('{{1}}') ? baseTrackingUrl : `${baseTrackingUrl}/{{1}}`
     components.push({
       type: 'BUTTONS',
       buttons: [{
         type: 'URL',
         text: template.buttonText || 'Shop Now',
-        // {{1}} makes the URL dynamic so we can inject the tracking link at send time
-        url: template.buttonUrl.includes('{{1}}') ? template.buttonUrl : `${template.buttonUrl}/{{1}}`,
+        url: dynamicUrl,
+        example: [template.exampleSlug || 'example-campaign'],
       }],
     })
   }
@@ -154,6 +158,20 @@ export async function sendTemplateMessage(
 ): Promise<{ wa_message_id: string } | { error: string }> {
   const bodyParams = params.variables.map(v => ({ type: 'text', text: v }))
 
+  const components: any[] = []
+  if (bodyParams.length > 0) {
+    components.push({ type: 'body', parameters: bodyParams })
+  }
+  // Inject tracking URL as button URL parameter ({{1}} in template button URL)
+  if (params.trackingUrl) {
+    components.push({
+      type: 'button',
+      sub_type: 'url',
+      index: '0',
+      parameters: [{ type: 'text', text: params.trackingUrl }],
+    })
+  }
+
   const body: any = {
     messaging_product: 'whatsapp',
     to: params.to.replace(/\D/g, ''),
@@ -161,9 +179,7 @@ export async function sendTemplateMessage(
     template: {
       name: params.templateName,
       language: { code: params.language },
-      components: bodyParams.length > 0
-        ? [{ type: 'body', parameters: bodyParams }]
-        : [],
+      components: components.length > 0 ? components : undefined,
     },
   }
 

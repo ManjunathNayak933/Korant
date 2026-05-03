@@ -1,4 +1,5 @@
 'use client'
+import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
 import { useState } from 'react'
 import Modal from './Modal'
 import { FormField, Input, Select, SubmitButton, UrlInput } from './FormFields'
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export default function AddInfluencerModal({ clientId, campaigns, onClose, onCreated }: Props) {
+  const couponIntegrations = useCouponIntegrations()
   const [form, setForm] = useState({ name: '', handle: '', social_platform: 'instagram', social_url: '', destination_url: '', discount_code: '', fee: '', campaign_id: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -65,6 +67,7 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <FormField label="Discount code">
             <Input value={form.discount_code} onChange={e => set('discount_code', e.target.value.toUpperCase())} placeholder="PRIYA15" />
+          <CouponStatusHint code={form.discount_code} status={couponIntegrations} />
           </FormField>
           <FormField label="Fee (₹)">
             <Input type="number" value={form.fee} onChange={e => set('fee', e.target.value)} placeholder="0" />

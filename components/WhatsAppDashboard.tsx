@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import Modal from './Modal'
 import { FormField, Input, Select, Textarea, SubmitButton } from './FormFields'
 import ChannelStatsBar from './ChannelStatsBar'
+import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
 
 interface WAConfig { phone_number_id?: string; phone_display?: string; verified?: boolean; monthly_conversations_used?: number }
 interface Template { id: string; template_name: string; status: string; body_text: string; header_text?: string; footer_text?: string; footer_text_raw?: string; variable_count: number; language: string; category: string; has_buttons: boolean; button_config?: { var_map?: Record<string, string>; button_text?: string; button_url?: string } }
@@ -76,6 +77,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
   // New template form
   const [tmplForm, setTmplForm] = useState({ name: '', category: 'MARKETING', language: 'en', headerType: 'TEXT', headerText: '', headerMediaId: '', headerMediaName: '', headerMediaPreview: '', bodyText: '', footerText: '', buttonText: '', buttonUrl: '' })
   const [uploadingMedia, setUploadingMedia] = useState(false)
+  const couponIntegrations = useCouponIntegrations()
   const [tmplLoading, setTmplLoading] = useState(false)
   const [tmplError, setTmplError] = useState('')
 
@@ -164,6 +166,8 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
     const payload = {
       ...tmplForm,
       bodyText: convertedBody,
+      trackingBase: tmplForm.buttonUrl ? `${baseUrl}/r` : undefined,
+      exampleSlug: 'example-campaign',
       button_config: {
         ...(hasNamedVars ? { var_map: varMap } : {}),
         ...(tmplForm.buttonText ? { button_text: tmplForm.buttonText } : {}),
@@ -942,6 +946,10 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
                     <div>
                       <label style={{ fontSize: 9, color: 'var(--text-dim)', display: 'block', marginBottom: 3 }}>Destination URL</label>
                       <input value={tmplForm.buttonUrl} onChange={e => { let v = e.target.value.trim(); if (v && !v.startsWith('https://')) v = 'https://' + v; setTmplForm(f => ({ ...f, buttonUrl: v })) }} placeholder="https://yourbrand.com/event" style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)', borderRadius: 5, color: 'var(--text-primary)', fontSize: 11, fontFamily: 'inherit', padding: '6px 8px', width: '100%', outline: 'none' }} />
+                      {tmplForm.buttonUrl && <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-dim)' }}>🔗 Clicks tracked via <span style={{ color: 'var(--amber)' }}>{baseUrl}/r/[slug]</span> — injected at send time</div>}
+                      {tmplForm.buttonUrl && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: 'var(--text-dim)' }}>🔗 Tracking link auto-injected at send time via <span style={{ color: 'var(--amber)' }}>{baseUrl}/r/[campaign-slug]</span></div>
+                      )}
                     </div>
                   </div>
                   <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 6 }}>Korant wraps this URL with a tracking link automatically. Every click is recorded in your dashboard.</div>

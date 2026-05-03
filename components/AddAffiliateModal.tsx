@@ -1,4 +1,5 @@
 'use client'
+import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
 import { useState } from 'react'
 import Modal from './Modal'
 import { FormField, Input, Select, SubmitButton, UrlInput } from './FormFields'
@@ -6,6 +7,7 @@ import { FormField, Input, Select, SubmitButton, UrlInput } from './FormFields'
 interface Props { clientId: string; programs: { id: string; name: string; commission_type: string; commission_value: number }[]; campaigns: { id: string; name: string }[]; onClose: () => void; onCreated: (a: any) => void }
 
 export default function AddAffiliateModal({ clientId, programs, campaigns, onClose, onCreated }: Props) {
+  const couponIntegrations = useCouponIntegrations()
   const [form, setForm] = useState({ name: '', handle: '', email: '', phone: '', destination_url: '', discount_code: '', commission_type: 'percentage', commission_value: '10', commission_trigger: 'per_sale', attribution_window_days: '30', program_id: '', campaign_id: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -39,7 +41,8 @@ export default function AddAffiliateModal({ clientId, programs, campaigns, onClo
           <FormField label="Phone"><Input type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} /></FormField>
         </div>
         <FormField label="Destination URL" required><UrlInput value={form.destination_url} onChange={v => set('destination_url', v)} placeholder="yourbrand.com" required /></FormField>
-        <FormField label="Discount code"><Input value={form.discount_code} onChange={e => set('discount_code', e.target.value.toUpperCase())} /></FormField>
+        <FormField label="Discount code"><Input value={form.discount_code} onChange={e => set('discount_code', e.target.value.toUpperCase())} />
+          <CouponStatusHint code={form.discount_code} status={couponIntegrations} /></FormField>
         {programs.length > 0 ? (
           <FormField label="Program"><Select value={form.program_id} onChange={e => set('program_id', e.target.value)} options={[{ value: '', label: 'Custom commission' }, ...programs.map(p => ({ value: p.id, label: `${p.name} (${p.commission_value}${p.commission_type === 'percentage' ? '%' : '₹'})` }))]} /></FormField>
         ) : (
