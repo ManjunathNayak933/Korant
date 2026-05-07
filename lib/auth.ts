@@ -139,9 +139,11 @@ export async function loginUser(
   if (client) {
     const match = await verifyPasswordCrypto(password, client.password_hash)
     if (!match) return null
-
-    const token = await signToken({ sub: client.id, role: 'client', email, name: client.name })
-    let redirectPath = '/dashboard'
+    // Block suspended accounts from logging in entirely
+    if (client.status === 'suspended') return { token: '', role: 'client', redirectPath: '', name: '', error: 'suspended' } as any
+    // Paused accounts can login but get redirected to paused page
+    const token = await signToken({ sub: client.id, role: 'client', email, name: client.name, status: client.status })
+    let redirectPath = client.status === 'paused' ? '/paused' : '/dashboard'
     const ob = client.onboarding || {}
     const onboardingDone =
       (ob.domain_done || ob.domain_skipped) &&
