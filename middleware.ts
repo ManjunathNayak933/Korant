@@ -35,9 +35,22 @@ export async function middleware(request: NextRequest) {
   // Allow public paths
   if (isPublic(pathname)) return NextResponse.next()
 
-  // Allow POST to signup-requests without auth
-  if (pathname === '/api/signup-requests' && request.method === 'POST') {
-    return NextResponse.next()
+  // Allow OPTIONS preflight + POST to signup-requests without auth (CORS for app.microkorant.in)
+  if (pathname === '/api/signup-requests' || pathname.startsWith('/api/signup-requests')) {
+    if (request.method === 'OPTIONS' || request.method === 'POST') {
+      const origin = request.headers.get('origin') || ''
+      const allowed = ['https://app.microkorant.in','https://www.microkorant.in','https://microkorant.in'].includes(origin) ? origin : '*'
+      if (request.method === 'OPTIONS') {
+        return new NextResponse(null, { status: 204, headers: {
+          'Access-Control-Allow-Origin': allowed,
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        }})
+      }
+      const res = NextResponse.next()
+      res.headers.set('Access-Control-Allow-Origin', allowed)
+      return res
+    }
   }
 
   // Get token
