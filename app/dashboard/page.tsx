@@ -19,18 +19,17 @@ const BASE_URL = typeof window !== 'undefined' ? window.location.origin : ''
 
 const TABS = [
   { id: 'overview',    label: 'Overview',       icon: '▦' },
-  { id: 'influencer',  label: 'Influencer',      icon: '🎯' },
-  { id: 'seo',         label: 'SEO',             icon: '📄' },
-  { id: 'affiliate',   label: 'Affiliate',       icon: '🔗' },
-  { id: 'whatsapp',    label: 'WhatsApp',        icon: '💬' },
-  { id: 'search',      label: 'Search Console',  icon: '🔍' },
-  { id: 'analytics',   label: 'Analytics',       icon: '📊' },
-  { id: 'meta',        label: 'Meta Ads',        icon: '▦', soon: true },
-  { id: 'marketplace', label: 'Marketplace',     icon: '🛒', soon: true },
-  { id: 'requests',    label: 'Requests',        icon: '🔔' },
+  { id: 'influencer',  label: 'Influencer',     icon: '🎯' },
+  { id: 'seo',         label: 'SEO',            icon: '📄' },
+  { id: 'affiliate',   label: 'Affiliate',      icon: '🔗' },
+  { id: 'whatsapp',    label: 'WhatsApp',       icon: '💬' },
+  { id: 'search',      label: 'Search Console', icon: '🔍' },
+  { id: 'analytics',   label: 'Analytics',      icon: '📊' },
+  { id: 'meta',        label: 'Meta Ads',       icon: '▦',  soon: true },
+  { id: 'marketplace', label: 'Marketplace',    icon: '🛒',  soon: true },
+  { id: 'requests',    label: 'Requests',       icon: '🔔' },
 ]
 
-// Check if setup is genuinely complete (not just the test-account pre-mark)
 function getSetupStatus(onboarding: Record<string, boolean> = {}) {
   return {
     domain:      onboarding.domain_done      || onboarding.domain_skipped      || false,
@@ -41,37 +40,34 @@ function getSetupStatus(onboarding: Record<string, boolean> = {}) {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState('overview')
-  const [user, setUser] = useState<any>(null)
-  const [metrics, setMetrics] = useState<any>(null)
-  const [feed, setFeed] = useState<any>({ items: [], alerts: [] })
-  const [campaigns, setCampaigns] = useState<any[]>([])
-  const [requests, setRequests] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [showAddCampaign, setShowAddCampaign] = useState(false)
-  const [showSetup, setShowSetup] = useState(false)
+  const [activeTab, setActiveTab]               = useState('overview')
+  const [user, setUser]                         = useState<any>(null)
+  const [metrics, setMetrics]                   = useState<any>(null)
+  const [feed, setFeed]                         = useState<any>({ items: [], alerts: [] })
+  const [campaigns, setCampaigns]               = useState<any[]>([])
+  const [requests, setRequests]                 = useState<any[]>([])
+  const [loading, setLoading]                   = useState(true)
+  const [showAddCampaign, setShowAddCampaign]   = useState(false)
+  const [showSetup, setShowSetup]               = useState(false)
   const [overviewCampaign, setOverviewCampaign] = useState('')
+  const [universeStats, setUniverseStats]       = useState({ totalUniverse: 0, totalMultiTouch: 0, totalSingleTouch: 0 })
 
-  // Generate last 3 months including current
   const monthOptions = Array.from({ length: 3 }, (_, i) => {
     const d = new Date()
     d.setDate(1)
     d.setMonth(d.getMonth() - i)
-    const val = d.toISOString().slice(0, 7)
+    const val   = d.toISOString().slice(0, 7)
     const label = d.toLocaleString('default', { month: 'long', year: 'numeric' })
     return { val, label }
   })
   const [currentMonth, setCurrentMonth] = useState(monthOptions[0].val)
 
-  // Re-fetch metrics when user returns to overview (picks up new clicks)
   useEffect(() => {
     if (activeTab === 'overview' && user) {
       fetch(`/api/metrics?clientId=${user.id}&month=${currentMonth}&noCache=1`)
-        .then(r => r.json())
-        .then(setMetrics)
-        .catch(() => {})
+        .then(r => r.json()).then(setMetrics).catch(() => {})
     }
-  }, [activeTab])
+  }, [activeTab]) // eslint-disable-line
 
   const load = useCallback(async () => {
     const meRes = await fetch('/api/auth/me')
@@ -79,45 +75,39 @@ export default function DashboardPage() {
     const me = await meRes.json()
     if (me.status === 'paused' || me.status === 'suspended') { router.push('/paused'); return }
     setUser(me)
-
-    // Load all data in parallel — don't wait for one before starting another
     const [metricsRes, feedRes, campRes, reqRes] = await Promise.all([
-      fetch(`/api/metrics?clientId=${me.id}&month=${currentMonth}&noCache=1${overviewCampaign ? '&campaignId=' + overviewCampaign : ''}`),  // eslint-disable-line
+      fetch(`/api/metrics?clientId=${me.id}&month=${currentMonth}&noCache=1${overviewCampaign ? '&campaignId=' + overviewCampaign : ''}`),
       fetch(`/api/feed?clientId=${me.id}`),
       fetch(`/api/campaigns?clientId=${me.id}`),
       fetch('/api/agency-requests'),
     ])
-
     const [metricsData, feedData, campData, reqData] = await Promise.all([
       metricsRes.json(), feedRes.json(), campRes.json(), reqRes.json(),
     ])
-
     setMetrics(metricsData)
     setFeed(feedData || { items: [], alerts: [] })
     setCampaigns(Array.isArray(campData) ? campData : [])
     setRequests(Array.isArray(reqData) ? reqData : [])
     setLoading(false)
-  }, [currentMonth])
+  }, [currentMonth]) // eslint-disable-line
 
   useEffect(() => { load() }, [load])
 
-  // Re-fetch metrics when campaign filter changes
   useEffect(() => {
     if (!user) return
     fetch(`/api/metrics?clientId=${user.id}&month=${currentMonth}&noCache=1${overviewCampaign ? '&campaignId=' + overviewCampaign : ''}`)
       .then(r => r.json()).then(setMetrics).catch(() => {})
-  }, [overviewCampaign, currentMonth])
+  }, [overviewCampaign, currentMonth]) // eslint-disable-line
 
-  // Re-fetch when user returns to this tab (e.g. after clicking a tracking link)
   useEffect(() => {
     const handler = () => { if (document.visibilityState === 'visible') load() }
     document.addEventListener('visibilitychange', handler)
     return () => document.removeEventListener('visibilitychange', handler)
   }, [load])
 
-  const setupStatus = getSetupStatus(user?.onboarding)
+  const setupStatus    = getSetupStatus(user?.onboarding)
   const setupDoneCount = Object.values(setupStatus).filter(Boolean).length
-  const setupLabel = setupDoneCount === 3 ? 'Setup ✓' : `Setup (${setupDoneCount}/3)`
+  const setupLabel     = setupDoneCount === 3 ? 'Setup ✓' : `Setup (${setupDoneCount}/3)`
 
   const navActions = [
     { label: '+ Campaign', color: 'amber' as const, onClick: () => setShowAddCampaign(true) },
@@ -132,64 +122,62 @@ export default function DashboardPage() {
     </div>
   )
 
-  const s = metrics?.summary || {}
+  const s        = metrics?.summary  || {}
   const channels = metrics?.channels || {}
+  const wa       = channels.whatsapp || {}
+  const currentMonthLabel = monthOptions.find(m => m.val === currentMonth)?.label || currentMonth
 
-  const wa = metrics?.channels?.whatsapp || {}
   const clickBars = [
-    { label: 'Influencer', value: channels.influencer?.clicks  || 0, color: 'var(--amber)' },
-    { label: 'SEO',        value: channels.seo?.clicks         || 0, color: 'var(--blue)' },
-    { label: 'Affiliate',  value: channels.affiliate?.clicks   || 0, color: 'var(--green)' },
-    { label: 'WhatsApp',   value: wa.clicks                    || 0, color: '#25d366' },
+    { label: 'Influencer', value: channels.influencer?.clicks || 0, color: 'var(--amber)' },
+    { label: 'SEO',        value: channels.seo?.clicks        || 0, color: 'var(--blue)'  },
+    { label: 'Affiliate',  value: channels.affiliate?.clicks  || 0, color: 'var(--green)' },
+    { label: 'WhatsApp',   value: wa.clicks                   || 0, color: '#25d366'      },
   ]
   const revBars = [
     { label: 'Influencer', value: Math.round(channels.influencer?.revenue || 0), color: 'var(--amber)' },
-    { label: 'SEO',        value: Math.round(channels.seo?.revenue        || 0), color: 'var(--blue)' },
+    { label: 'SEO',        value: Math.round(channels.seo?.revenue        || 0), color: 'var(--blue)'  },
     { label: 'Affiliate',  value: Math.round(channels.affiliate?.revenue  || 0), color: 'var(--green)' },
-    { label: 'WhatsApp',   value: Math.round(wa.revenue                   || 0), color: '#25d366' },
+    { label: 'WhatsApp',   value: Math.round(wa.revenue                   || 0), color: '#25d366'      },
   ]
+
+  const kpiCell = (label: string, value: string, dim?: string) => (
+    <div key={label} style={{ padding: '18px 20px', borderRight: '0.5px solid var(--border)' }}>
+      <div style={{ fontSize: 9, letterSpacing: '0.5px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
+      {dim && <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4 }}>{dim}</div>}
+    </div>
+  )
 
   return (
     <div style={{ background: 'var(--bg)', minHeight: '100vh' }}>
       <DashboardNav user={user} actions={navActions} brandName={user?.name} onRefresh={load} />
       <ChannelTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
-      {/* Alert banner */}
       {feed.alerts?.length > 0 && (
         <div style={{ background: 'var(--amber-bg)', borderBottom: '0.5px solid var(--amber-border)', padding: '9px 24px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--amber)', flexShrink: 0 }} />
-          <span style={{ fontSize: 11, color: 'var(--amber)', flex: 1 }}>
-            {feed.alerts.map((a: any) => a.message).join(' · ')}
-          </span>
+          <span style={{ fontSize: 11, color: 'var(--amber)', flex: 1 }}>{feed.alerts.map((a: any) => a.message).join(' · ')}</span>
         </div>
       )}
 
-      {/* Month picker bar — visible on all non-overview tabs */}
       {activeTab !== 'overview' && (
         <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 2 }}>Period:</span>
           {monthOptions.map(m => (
-            <button key={m.val} onClick={() => setCurrentMonth(m.val)}
-              style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>
-              {m.label}
-            </button>
+            <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
           ))}
         </div>
       )}
 
       <div style={{ padding: '0 24px' }}>
 
-        {/* ─── OVERVIEW ─── */}
         {activeTab === 'overview' && (
           <>
-            {/* Combined Period + Campaign filter strip */}
+            {/* Period + Campaign strip */}
             <div style={{ padding: '10px 0', borderBottom: '0.5px solid var(--border)', margin: '0 -24px', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Period:</span>
               {monthOptions.map(m => (
-                <button key={m.val} onClick={() => setCurrentMonth(m.val)}
-                  style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>
-                  {m.label}
-                </button>
+                <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
               ))}
               <div style={{ width: '0.5px', height: 16, background: 'var(--border2)', margin: '0 4px' }} />
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Campaign:</span>
@@ -199,38 +187,30 @@ export default function DashboardPage() {
               ))}
             </div>
 
-            {/* KPI rows */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
-              {[
-                { label: 'Total clicks',    value: (s.totalClicks || 0).toLocaleString('en-IN') },
-                { label: 'Total sales',     value: (s.totalSales  || 0).toLocaleString('en-IN') },
-                { label: 'Code sales',      value: (s.codeRedemptions || 0).toLocaleString('en-IN') },
-                { label: 'Conversion rate', value: `${s.conversionRate || '0.00'}%` },
-              ].map(k => (
-                <div key={k.label} style={{ padding: '18px 22px', borderRight: '0.5px solid var(--border)' }}>
-                  <div style={{ fontSize: 10, letterSpacing: '0.5px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 8 }}>{k.label}</div>
-                  <div style={{ fontSize: 24, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1 }}>{k.value}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
-              {[
-                { label: 'Revenue',       value: `₹${((s.revenueAttributed||0)/100000).toFixed(1)}L` },
-                { label: 'Total budget',  value: `₹${((s.totalBudget||0)/1000).toFixed(0)}k` },
-                { label: 'Cost / click',  value: s.avgCostPerClick ? `₹${s.avgCostPerClick.toFixed(1)}` : '—' },
-                { label: 'Cost / sale',   value: s.avgCostPerSale  ? `₹${s.avgCostPerSale.toFixed(0)}`  : '—' },
-              ].map(k => (
-                <div key={k.label} style={{ padding: '18px 22px', borderRight: '0.5px solid var(--border)' }}>
-                  <div style={{ fontSize: 10, letterSpacing: '0.5px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 8 }}>{k.label}</div>
-                  <div style={{ fontSize: 24, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1 }}>{k.value}</div>
-                </div>
-              ))}
+            {/* KPI row 1 — 5 cols: clicks, sales, code sales, conv rate, total audience */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
+              {kpiCell('Total clicks',    (s.totalClicks||0).toLocaleString('en-IN'))}
+              {kpiCell('Total sales',     (s.totalSales ||0).toLocaleString('en-IN'))}
+              {kpiCell('Code sales',      (s.codeRedemptions||0).toLocaleString('en-IN'))}
+              {kpiCell('Conversion rate', `${s.conversionRate||'0.00'}%`)}
+              {kpiCell('Total audience',  universeStats.totalUniverse.toLocaleString('en-IN'), 'unique cookie visitors')}
             </div>
 
+            {/* KPI row 2 — 5 cols: revenue, budget, cost/click, multi-channel, single-channel */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
+              {kpiCell('Revenue',        `₹${((s.revenueAttributed||0)/100000).toFixed(1)}L`)}
+              {kpiCell('Total budget',   `₹${((s.totalBudget||0)/1000).toFixed(0)}k`)}
+              {kpiCell('Cost / click',   s.avgCostPerClick ? `₹${s.avgCostPerClick.toFixed(1)}` : '—')}
+              {kpiCell('Multi-channel',  universeStats.totalMultiTouch.toLocaleString('en-IN'), 'touched 2+ partners')}
+              {kpiCell('Single-channel', universeStats.totalSingleTouch.toLocaleString('en-IN'), 'one partner only')}
+            </div>
+
+            {/* Charts grid */}
             <div style={{ padding: '24px 0', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
-              {/* Channel comparison */}
+
+              {/* Channel comparison — full width */}
               <div style={{ gridColumn: '1/-1', background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
-                <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {monthOptions.find(m => m.val === currentMonth)?.label || currentMonth}</div>
+                <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {currentMonthLabel}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
                   {[['Influencer','influencer','var(--amber)'],['SEO','seo','var(--blue)'],['Affiliate','affiliate','var(--green)'],['WhatsApp','whatsapp','#25d366']].map(([ch,key,color]) => {
                     const c = channels[key] || {}
@@ -238,9 +218,9 @@ export default function DashboardPage() {
                       <div key={ch} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 8, padding: 14 }}>
                         <div style={{ fontSize: 11, color, marginBottom: 10, fontWeight: 500 }}>{ch}</div>
                         {(ch === 'WhatsApp'
-                          ? [['Sent', c.sent||0], ['Read', c.read||0], ['Revenue', `₹${((c.revenue||0)/1000).toFixed(0)}k`]]
-                          : [['Clicks', c.clicks||0], ['Sales', c.sales||0], ['Revenue', `₹${((c.revenue||0)/1000).toFixed(0)}k`]]
-                        ).map(([l,v])=>(
+                          ? [['Sent',c.sent||0],['Read',c.read||0],['Revenue',`₹${((c.revenue||0)/1000).toFixed(0)}k`]]
+                          : [['Clicks',c.clicks||0],['Sales',c.sales||0],['Revenue',`₹${((c.revenue||0)/1000).toFixed(0)}k`]]
+                        ).map(([l,v]) => (
                           <div key={l as string} style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
                             <span style={{ fontSize:11, color:'var(--text-dim)' }}>{l}</span>
                             <span style={{ fontSize:12, color:'var(--text-secondary)' }}>{v}</span>
@@ -255,7 +235,6 @@ export default function DashboardPage() {
               <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
               <MiniBarChart title="Revenue by channel (₹)" bars={revBars} emptyMessage="No attributed revenue yet" height={100} />
 
-              {/* Top influencers */}
               <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 14 }}>Top influencers</div>
                 {metrics?.influencers?.length > 0 ? (
@@ -277,25 +256,15 @@ export default function DashboardPage() {
               </div>
 
               <FeedPanel items={feed.items||[]} alerts={feed.alerts||[]} onRefresh={load} />
-
-              <GoalsPanel
-                goals={user?.goals?.[currentMonth]||{}}
-                clientId={user?.id}
-                month={currentMonth}
-                onUpdated={(g) => setUser((u: any) => ({ ...u, goals: { ...(u?.goals||{}), [currentMonth]: g } }))}
-              />
+              <GoalsPanel goals={user?.goals?.[currentMonth]||{}} clientId={user?.id} month={currentMonth} onUpdated={(g) => setUser((u: any) => ({ ...u, goals: { ...(u?.goals||{}), [currentMonth]: g } }))} />
             </div>
+
+            {/* Reach vs Conv + Audience Overlap — full width below grid */}
+            <OverviewAnalytics clientId={user?.id} month={currentMonth} onData={d => setUniverseStats(d.universe)} />
           </>
         )}
 
-        <div style={{ marginTop: 16 }}>
-         <OverviewAnalytics clientId={user?.id} month={currentMonth} />
-        </div>
-
-
-        {activeTab === 'analytics' && (
-          <AnalyticsDashboard clientId={user?.id} month={currentMonth} />
-        )}
+        {activeTab === 'analytics' && <AnalyticsDashboard clientId={user?.id} month={currentMonth} />}
 
         {activeTab === 'influencer' && (
           <div style={{ padding: '24px 0' }}>
@@ -369,13 +338,8 @@ export default function DashboardPage() {
       {showAddCampaign && (
         <AddCampaignModal clientId={user?.id} onClose={() => setShowAddCampaign(false)} onCreated={c => { setCampaigns(prev => [c, ...prev]); setShowAddCampaign(false) }} />
       )}
-
       {showSetup && (
-        <SetupModal
-          user={user}
-          onClose={() => setShowSetup(false)}
-          onSave={(ob) => setUser((u: any) => ({ ...u, onboarding: ob }))}
-        />
+        <SetupModal user={user} onClose={() => setShowSetup(false)} onSave={(ob) => setUser((u: any) => ({ ...u, onboarding: ob }))} />
       )}
     </div>
   )

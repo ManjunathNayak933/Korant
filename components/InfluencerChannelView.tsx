@@ -5,6 +5,7 @@ import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
 import AssetInsights from './AssetInsights'
+import { useAssetData } from './AssetInsights'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
@@ -25,6 +26,11 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
   const [statsModal, setStatsModal] = useState<Influencer | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+
+  // Fetch asset/visitor data for all influencers
+  const { data: assetData } = useAssetData(clientId, month, 'influencer')
+  const visitorMap: Record<string, { unique: number; returned: number; shared: number; returnRate: number; sharedRate: number }> = {}
+  ;(assetData?.partnerStats || []).forEach(p => { visitorMap[p.id] = p })
 
   useEffect(() => {
     let cancelled = false
@@ -65,19 +71,17 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
   const filtered = selectedCampaign ? influencers.filter(i => i.campaign_id === selectedCampaign) : influencers
   const sorted = [...filtered].sort((a, b) => {
     const ma = metrics[a.id] || {}, mb = metrics[b.id] || {}
-    if (sort === 'clicks')   return (mb.clicks || 0) - (ma.clicks || 0)
-    if (sort === 'sales')    return (mb.totalSales || 0) - (ma.totalSales || 0)
-    if (sort === 'revenue')  return (mb.revenueAttributed || 0) - (ma.revenueAttributed || 0)
+    if (sort === 'clicks')  return (mb.clicks || 0) - (ma.clicks || 0)
+    if (sort === 'sales')   return (mb.totalSales || 0) - (ma.totalSales || 0)
+    if (sort === 'revenue') return (mb.revenueAttributed || 0) - (ma.revenueAttributed || 0)
     return 0
   })
 
   return (
     <div>
-      {/* Channel-specific KPI + charts — reacts to campaign filter */}
       <ChannelStatsBar clientId={clientId} channel="influencer" campaignId={selectedCampaign} month={month} />
       <AssetInsights clientId={clientId} month={month} channel="influencer" />
 
-      {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <CampaignFilter campaigns={campaigns} selected={selectedCampaign} onChange={setSelectedCampaign} onAdd={onCampaignAdd} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -116,6 +120,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 12 }}>
           {sorted.map(inf => {
             const m = metrics[inf.id] || {}
+            const v = visitorMap[inf.id]
             return (
               <div key={inf.id} style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 16, opacity: inf.is_active ? 1 : 0.45 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
@@ -129,29 +134,40 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
                   {!inf.is_active && <span style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 3, padding: '2px 6px', fontSize: 9, color: 'var(--text-dim)' }}>paused</span>}
                 </div>
 
-                {/* Per-influencer stats from metrics */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 10 }}>
+                {/* Performance stats */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6, marginBottom: 8 }}>
                   {[
-                    ['Clicks',  m.clicks || 0],
-                    ['Sales',   m.totalSales || 0],
-                    ['Conv',    `${(m.conversionRate||0).toFixed(1)}%`],
-                    ['Rev',     `₹${((m.revenueAttributed||0)/1000).toFixed(0)}k`],
+                    ['Clicks', m.clicks || 0],
+                    ['Sales',  m.totalSales || 0],
+                    ['Conv',   `${(m.conversionRate||0).toFixed(1)}%`],
+                    ['Rev',    `₹${((m.revenueAttributed||0)/1000).toFixed(0)}k`],
                   ].map(([l,v]) => (
-                    <div key={l as string} style={{ textAlign: 'center', background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 5, padding: '7px 4px' }}>
+                    <div key={l as string} style={{ textAlign: 'center', background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 5, padding: '6px 4px' }}>
                       <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{v}</div>
-                      <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: 2 }}>{l}</div>
+                      <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: 1 }}>{l}</div>
                     </div>
                   ))}
                 </div>
 
-                {/* Code + device breakdown */}
+                {/* Visitor stats row — unique / returned / shared */}
+                {v && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 8 }}>
+                    {[
+                      ['Unique',    v.unique,   'var(--amber)'],
+                      ['Returned',  v.returned, '#4a9eff'],
+                      ['Shared',    v.shared,   '#9b59b6'],
+                    ].map(([l, val, col]) => (
+                      <div key={l as string} style={{ textAlign: 'center', background: `${col}11`, border: `0.5px solid ${col}33`, borderRadius: 5, padding: '5px 4px' }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: col as string }}>{val}</div>
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: 1 }}>{l}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   {inf.discount_code && <span className="disc-code">{inf.discount_code}</span>}
-                  {m.deviceBreakdown && (
-                    <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                      📱{m.deviceBreakdown.mobile||0} 🖥{m.deviceBreakdown.desktop||0}
-                    </span>
-                  )}
+                  {m.deviceBreakdown && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>📱{m.deviceBreakdown.mobile||0} 🖥{m.deviceBreakdown.desktop||0}</span>}
                   {m.topCity && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>📍{m.topCity}</span>}
                 </div>
 
@@ -173,22 +189,67 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
 
       {showAdd && <AddInfluencerModal clientId={clientId} campaigns={campaigns} onClose={() => setShowAdd(false)} onCreated={inf => { setInfluencers(prev => [inf, ...prev]); setShowAdd(false) }} />}
 
+      {/* Full Stats Modal — includes visitor breakdown */}
       {statsModal && (
         <Modal title={`${statsModal.name} — Full stats`} onClose={() => setStatsModal(null)}>
           {(() => {
             const m = metrics[statsModal.id] || {}
+            const v = visitorMap[statsModal.id]
             return (
               <div>
+                {/* Performance */}
+                <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 8 }}>Performance</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 16 }}>
-                  {[['Clicks',m.clicks||0],['Code sales',m.codeRedemptions||0],['Cookie sales',m.cookieSales||0],['Total sales',m.totalSales||0],['Revenue',`₹${(m.revenueAttributed||0).toLocaleString('en-IN')}`],['Conv rate',`${(m.conversionRate||0).toFixed(2)}%`]].map(([l,v]) => (
+                  {[
+                    ['Clicks',       m.clicks||0],
+                    ['Code sales',   m.codeRedemptions||0],
+                    ['Cookie sales', m.cookieSales||0],
+                    ['Total sales',  m.totalSales||0],
+                    ['Revenue',      `₹${(m.revenueAttributed||0).toLocaleString('en-IN')}`],
+                    ['Conv rate',    `${(m.conversionRate||0).toFixed(2)}%`],
+                  ].map(([l,v]) => (
                     <div key={l as string} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
                       <div style={{ fontSize: 18, fontWeight: 500, color: 'var(--text-primary)' }}>{v}</div>
                       <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{l}</div>
                     </div>
                   ))}
                 </div>
-                {m.topCity && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Top city: <span style={{ color: 'var(--text-secondary)' }}>{m.topCity}</span></div>}
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Fee: <span style={{ color: 'var(--amber)' }}>₹{(statsModal.fee||0).toLocaleString('en-IN')}</span></div>
+
+                {/* Visitor breakdown */}
+                {v ? (
+                  <>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 8 }}>Visitor breakdown</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 16 }}>
+                      {[
+                        ['Unique visitors', v.unique,   'var(--amber)'],
+                        ['Returned',        v.returned, '#4a9eff'],
+                        ['Shared*',         v.shared,   '#9b59b6'],
+                      ].map(([l, val, col]) => (
+                        <div key={l as string} style={{ background: `${col}11`, border: `0.5px solid ${col}33`, borderRadius: 6, padding: 10, textAlign: 'center' }}>
+                          <div style={{ fontSize: 18, fontWeight: 600, color: col as string }}>{val}</div>
+                          <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{l}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+                      <div style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
+                        <div style={{ fontSize: 18, fontWeight: 500, color: '#4a9eff' }}>{v.returnRate}%</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Return rate</div>
+                      </div>
+                      <div style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
+                        <div style={{ fontSize: 18, fontWeight: 500, color: '#9b59b6' }}>{v.sharedRate}%</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Shared rate</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 12 }}>*Shared = this influencer's visitors who also touched another partner (any channel)</div>
+                  </>
+                ) : (
+                  <div style={{ padding: '10px 0 16px', fontSize: 11, color: 'var(--text-dim)' }}>Install beacon on your store to see visitor return/share data for this influencer.</div>
+                )}
+
+                {/* Other details */}
+                {m.topCity && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 5 }}>Top city: <span style={{ color: 'var(--text-secondary)' }}>{m.topCity}</span></div>}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 5 }}>Fee: <span style={{ color: 'var(--amber)' }}>₹{(statsModal.fee||0).toLocaleString('en-IN')}</span></div>
                 {m.deviceBreakdown && (
                   <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Devices — mobile: {m.deviceBreakdown.mobile||0} · desktop: {m.deviceBreakdown.desktop||0} · tablet: {m.deviceBreakdown.tablet||0}</div>
                 )}
