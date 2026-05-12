@@ -230,7 +230,7 @@ export default function DashboardPage() {
             <div style={{ padding: '24px 0', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
               {/* Channel comparison */}
               <div style={{ gridColumn: '1/-1', background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
-                <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {currentMonth}</div>
+                <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {monthOptions.find(m => m.val === currentMonth)?.label || currentMonth}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
                   {[['Influencer','influencer','var(--amber)'],['SEO','seo','var(--blue)'],['Affiliate','affiliate','var(--green)'],['WhatsApp','whatsapp','#25d366']].map(([ch,key,color]) => {
                     const c = channels[key] || {}
@@ -250,11 +250,6 @@ export default function DashboardPage() {
                     )
                   })}
                 </div>
-              </div>
-
-              <OverviewAnalytics clientId={user?.id} month={currentMonth} />
-              <div style={{ gridColumn: '1/-1' }}>
-                <OverviewAnalytics clientId={user?.id} month={currentMonth} />
               </div>
 
               <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
@@ -292,6 +287,11 @@ export default function DashboardPage() {
             </div>
           </>
         )}
+
+        <div style={{ marginTop: 16 }}>
+         <OverviewAnalytics clientId={user?.id} month={currentMonth} />
+        </div>
+
 
         {activeTab === 'analytics' && (
           <AnalyticsDashboard clientId={user?.id} month={currentMonth} />
