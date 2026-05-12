@@ -13,11 +13,12 @@ const JWT_SECRET = new TextEncoder().encode(
 const PUBLIC_PATHS = [
   '/login',
   '/paused',
+  '/api/beacon',
   '/affiliate/join',
   '/r/',
   '/api/auth/',
   '/api/webhook/',
-    '/api/whatsapp/connect',
+  '/api/whatsapp/connect',
   '/api/affiliate-signup/',
   '/api/marketplace/',
 ]

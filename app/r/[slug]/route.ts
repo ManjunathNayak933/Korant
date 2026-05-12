@@ -1,83 +1,117 @@
 export const runtime = 'edge'
-
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { findEntityBySlug, parseGeoFromRequest, parseDeviceBrowser } from '@/lib/tracking'
-import { invalidateClientMetrics } from '@/lib/cache'
+import {
+  generateVisitorId,
+  getVisitorCookie,
+  buildVisitorCookie,
+  detectEntrySource,
+  recordTouchpoint,
+} from '@/lib/visitor'
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ slug: string }> }
+  { params }: { params: { slug: string } }
 ) {
-  const slug = (await params).slug
-  const sb = getSupabaseAdmin()
+  const slug = params.slug
+  const sb   = getSupabaseAdmin()
 
-  const found = await findEntityBySlug(slug)
-  if (!found) {
-    return NextResponse.redirect(
-      new URL('/', process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'), 302
-    )
+  // Look up tracking link
+  const { data: link } = await sb
+    .from('tracking_links')
+    .select('*')
+    .eq('slug', slug)
+    .single()
+
+  // Fallback: check whatsapp_campaigns tracking_slug
+  let waLink: any = null
+  if (!link) {
+    const { data: wa } = await sb
+      .from('whatsapp_campaigns')
+      .select('client_id, tracking_slug, variable_map')
+      .eq('tracking_slug', slug)
+      .single()
+    waLink = wa
   }
 
-  const { type, entity } = found
-  const destination = entity.destination_url.startsWith('http')
-    ? entity.destination_url
-    : `https://${entity.destination_url}`
+  const destination = link?.destination_url || waLink ? null : null
 
-  // Cookie-based dedup — 30-min window per browser per slug
-  const dedupCookie = request.cookies.get(`mk_c_${slug}`)?.value
-  const mkSlugFirst = request.cookies.get('mk_slug_first')?.value
+  // Get or create visitor ID
+  let visitorId = getVisitorCookie(request)
+  const isNewVisitor = !visitorId
+  if (!visitorId) visitorId = generateVisitorId()
 
-  const response = NextResponse.redirect(destination, { status: 302 })
+  const entrySource = detectEntrySource(request)
+  const clientId    = link?.client_id || waLink?.client_id
+  const ip          = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || ''
 
-  // Set last-touch attribution cookie (30d)
-  response.cookies.set('mk_slug', slug, {
-    httpOnly: false, maxAge: 30 * 24 * 60 * 60, path: '/', sameSite: 'lax',
-  })
-  // Set first-touch cookie ONCE — never overwrite
-  if (!mkSlugFirst) {
-    response.cookies.set('mk_slug_first', slug, {
-      httpOnly: false, maxAge: 90 * 24 * 60 * 60, path: '/', sameSite: 'lax',
-    })
-  }
+  if (clientId) {
+    // Determine channel from link type
+    const channel = link?.influencer_id ? 'influencer'
+      : link?.publication_id ? 'seo'
+      : link?.affiliate_id   ? 'affiliate'
+      : waLink               ? 'whatsapp'
+      : 'direct'
 
-  // Only record click if entity is active AND not a duplicate within 30 mins
-  if (entity.is_active && !dedupCookie) {
-    const geo = parseGeoFromRequest(request)
-    const { device, browser } = parseDeviceBrowser(request)
-
-    // Set dedup cookie
-    response.cookies.set(`mk_c_${slug}`, '1', {
-      httpOnly: true, maxAge: 30 * 60, path: '/', sameSite: 'lax',
-    })
-
-    const eventData: Record<string, unknown> = {
-      client_id: entity.client_id,
-      campaign_id: entity.campaign_id || null,
-      type: 'click',
-      attribution_method: 'slug',
-      city: geo.city,
-      country: geo.country,
-      lat: geo.lat,
-      lon: geo.lon,
-      device,
-      browser,
-      ip: geo.ip,
-      first_touch_slug: mkSlugFirst || slug,
-      referrer: request.headers.get('referer') || null,
+    // Get partner details
+    let partnerName = ''
+    if (link?.influencer_id) {
+      const { data: inf } = await sb.from('influencers').select('name').eq('id', link.influencer_id).single()
+      partnerName = inf?.name || ''
+    } else if (link?.affiliate_id) {
+      const { data: aff } = await sb.from('affiliates').select('name').eq('id', link.affiliate_id).single()
+      partnerName = aff?.name || ''
+    } else if (link?.publication_id) {
+      const { data: pub } = await sb.from('publications').select('publication_name').eq('id', link.publication_id).single()
+      partnerName = pub?.publication_name || ''
     }
 
-    if (type === 'influencer') eventData.influencer_id = entity.id
-    else if (type === 'publication') eventData.publication_id = entity.id
-    else if (type === 'affiliate') eventData.affiliate_id = entity.id
+    // Record journey touchpoint
+    const { journeyId, touchNumber, isNew } = await recordTouchpoint({
+      clientId,
+      visitorId,
+      channel,
+      partnerId:    link?.influencer_id || link?.affiliate_id || link?.publication_id || null,
+      partnerName,
+      campaignId:   link?.campaign_id || waLink?.campaign_id || null,
+      eventType:    'click',
+      entrySource,
+      isReturnVisit: !isNew,
+    })
 
-    // Insert event and invalidate metrics cache — both fire together
-    try {
-      await sb.from('events').insert(eventData)
-      // Bust ALL metrics cache entries for this client so overview + channel tabs show fresh data immediately
-      await invalidateClientMetrics(entity.client_id)
-    } catch {}
+    // Record click event (existing system)
+    await sb.from('events').insert({
+      client_id:       clientId,
+      type:            'click',
+      influencer_id:   link?.influencer_id  || null,
+      publication_id:  link?.publication_id || null,
+      affiliate_id:    link?.affiliate_id   || null,
+      campaign_id:     link?.campaign_id    || null,
+      timestamp:       new Date().toISOString(),
+      city:            request.headers.get('cf-ipcity')     || null,
+      country:         request.headers.get('cf-ipcountry')  || null,
+      lat:             request.headers.get('cf-iplatitude')  ? parseFloat(request.headers.get('cf-iplatitude')!) : null,
+      lon:             request.headers.get('cf-iplongitude') ? parseFloat(request.headers.get('cf-iplongitude')!) : null,
+      referrer:        request.headers.get('referer') || null,
+      platform:        request.headers.get('sec-ch-ua-platform') || null,
+      // Journey fields
+      visitor_id:      visitorId,
+      journey_id:      journeyId,
+      touch_number:    touchNumber,
+      is_return_visit: !isNew,
+      first_channel:   channel,
+      entry_source:    entrySource,
+    })
   }
 
-  return response
+  // Build redirect response
+  const destUrl = link?.destination_url || '/'
+  const res = NextResponse.redirect(destUrl, 302)
+
+  // Set visitor cookie (180 days if new, refresh if existing)
+  if (isNewVisitor) {
+    res.headers.set('Set-Cookie', buildVisitorCookie(visitorId))
+  }
+
+  return res
 }

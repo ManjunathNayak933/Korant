@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import DashboardNav from '@/components/DashboardNav'
 import ChannelTabs from '@/components/ChannelTabs'
 import InfluencerChannelView from '@/components/InfluencerChannelView'
+import AnalyticsDashboard from '@/components/AnalyticsDashboard'
 import SEODashboard from '@/components/SEODashboard'
 import AffiliateDashboard from '@/components/AffiliateDashboard'
 import FeedPanel from '@/components/FeedPanel'
@@ -22,6 +23,7 @@ const TABS = [
   { id: 'affiliate',   label: 'Affiliate',       icon: '🔗' },
   { id: 'whatsapp',    label: 'WhatsApp',        icon: '💬' },
   { id: 'search',      label: 'Search Console',  icon: '🔍' },
+  { id: 'analytics',   label: 'Analytics',       icon: '📊' },
   { id: 'meta',        label: 'Meta Ads',        icon: '▦', soon: true },
   { id: 'marketplace', label: 'Marketplace',     icon: '🛒', soon: true },
   { id: 'requests',    label: 'Requests',        icon: '🔔' },
@@ -283,6 +285,10 @@ export default function DashboardPage() {
               />
             </div>
           </>
+        )}
+
+        {activeTab === 'analytics' && (
+          <AnalyticsDashboard clientId={user?.id} month={currentMonth} />
         )}
 
         {activeTab === 'influencer' && (
