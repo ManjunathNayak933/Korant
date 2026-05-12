@@ -153,7 +153,6 @@ export default function DashboardPage() {
     <div style={{ background: 'var(--bg)', minHeight: '100vh' }}>
       <DashboardNav user={user} actions={navActions} brandName={user?.name} onRefresh={load} />
       <ChannelTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
-      <OverviewAnalytics clientId={user?.id} month={currentMonth} />
 
       {/* Alert banner */}
       {feed.alerts?.length > 0 && (
@@ -251,6 +250,11 @@ export default function DashboardPage() {
                     )
                   })}
                 </div>
+              </div>
+
+              <OverviewAnalytics clientId={user?.id} month={currentMonth} />
+              <div style={{ gridColumn: '1/-1' }}>
+                <OverviewAnalytics clientId={user?.id} month={currentMonth} />
               </div>
 
               <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
