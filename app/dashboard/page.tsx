@@ -13,6 +13,7 @@ import AddCampaignModal from '@/components/AddCampaignModal'
 import SetupModal from '@/components/SetupModal'
 import WhatsAppDashboard from '@/components/WhatsAppDashboard'
 import MiniBarChart from '@/components/MiniBarChart'
+import OverviewAnalytics from '@/components/OverviewAnalytics'
 
 const BASE_URL = typeof window !== 'undefined' ? window.location.origin : ''
 
@@ -152,6 +153,7 @@ export default function DashboardPage() {
     <div style={{ background: 'var(--bg)', minHeight: '100vh' }}>
       <DashboardNav user={user} actions={navActions} brandName={user?.name} onRefresh={load} />
       <ChannelTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      <OverviewAnalytics clientId={user?.id} month={currentMonth} />
 
       {/* Alert banner */}
       {feed.alerts?.length > 0 && (

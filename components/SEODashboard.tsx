@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import AddPublicationModal from './AddPublicationModal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
+import AssetInsights from './AssetInsights'
 
 interface Pub { id: string; publication_name: string; author_name?: string; type: string; article_url?: string; redirect_slug: string; destination_url: string; estimated_reach?: number; is_sponsored: boolean; published_at?: string; cost: number; is_active: boolean; campaign_id?: string }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
@@ -57,6 +58,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
     <div>
       {/* Channel KPI + charts — reacts to campaign filter */}
       <ChannelStatsBar clientId={clientId} channel="seo" campaignId={selectedCampaign} month={month} />
+      <AssetInsights clientId={clientId} month={month} channel="seo" />
 
       {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>

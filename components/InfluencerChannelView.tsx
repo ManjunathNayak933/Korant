@@ -4,6 +4,7 @@ import AddInfluencerModal from './AddInfluencerModal'
 import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
+import AssetInsights from './AssetInsights'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
@@ -74,6 +75,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
     <div>
       {/* Channel-specific KPI + charts — reacts to campaign filter */}
       <ChannelStatsBar clientId={clientId} channel="influencer" campaignId={selectedCampaign} month={month} />
+      <AssetInsights clientId={clientId} month={month} channel="influencer" />
 
       {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>

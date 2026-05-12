@@ -6,6 +6,7 @@ import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
 import MiniBarChart from './MiniBarChart'
 import { FormField, Textarea, SubmitButton } from './FormFields'
+import AssetInsights from './AssetInsights'
 
 interface Affiliate { id: string; name: string; handle: string; email?: string; phone?: string; is_active: boolean; paused_at?: string; paused_reason?: string; source: string; redirect_slug: string; discount_code?: string; commission_type: string; commission_value: number; commission_trigger: string; created_at: string; campaign_id?: string }
 interface Program { id: string; name: string; commission_type: string; commission_value: number; commission_trigger: string; attribution_window_days: number; is_public: boolean; is_active: boolean }
@@ -137,6 +138,8 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
           <button key={id} onClick={() => setSubTab(id as any)} style={{ padding: '8px 16px', background: 'transparent', border: 'none', borderBottom: `1.5px solid ${subTab === id ? 'var(--amber)' : 'transparent'}`, color: subTab === id ? 'var(--text-primary)' : 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>{label}</button>
         ))}
       </div>
+
+      <AssetInsights clientId={clientId} month={month} channel="affiliate" />
 
       {/* Channel KPI + charts — reacts to campaign filter */}
       {subTab === 'affiliates' && <ChannelStatsBar clientId={clientId} channel="affiliate" campaignId={selectedCampaign} month={month} />}
