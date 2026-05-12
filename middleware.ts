@@ -54,6 +54,10 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  if (pathname.startsWith('/api/beacon')) {
+  return NextResponse.next()
+  }
+
   // Get token
   const token = request.cookies.get('mk_token')?.value
   if (!token) {
