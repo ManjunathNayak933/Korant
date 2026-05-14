@@ -127,8 +127,8 @@ var options = {
 
 | Plan | Price | Influencers | Affiliates | Publications | Campaigns |
 |------|-------|-------------|------------|--------------|-----------|
-| Basic | ₹3,001/mo | 5 | 5 | 5 | 3 |
-| Pro | ₹6,211/mo | Unlimited | Unlimited | Unlimited | Unlimited |
+| Basic | ₹4,249/mo | 5 | 5 | 5 | 3 |
+| Pro | ₹4,549/mo | Unlimited | Unlimited | Unlimited | Unlimited |
 
 ---
 

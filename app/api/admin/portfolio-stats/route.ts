@@ -30,8 +30,8 @@ export async function GET(request: NextRequest) {
   const sales = (recentEvents || []).filter(e => e.type !== 'click').length
   const revenue = (recentEvents || []).reduce((s, e) => s + (e.order_value || 0), 0)
 
-  const basicPrice = 3001
-  const proPrice = 6211
+  const basicPrice = 4249
+  const proPrice = 4549
   const mrr = basicCount * basicPrice + proCount * proPrice
 
   return NextResponse.json({

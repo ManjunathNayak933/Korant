@@ -52,12 +52,14 @@ const TABS = [
   { id: 'requests',    label: 'Requests',       icon: '🔔' },
 ]
 
-function getSetupStatus(onboarding: Record<string, boolean> = {}) {
-  return {
-    domain:      onboarding.domain_done      || onboarding.domain_skipped      || false,
-    webhook:     onboarding.webhook_done     || onboarding.webhook_skipped     || false,
-    attribution: onboarding.attribution_done || onboarding.attribution_skipped || false,
-  }
+// Only _done fields count toward the progress counter.
+// _skipped means "I'll do this later" — it does NOT mark the step complete.
+function getSetupDoneCount(onboarding: Record<string, boolean> = {}) {
+  return [
+    onboarding.domain_done,
+    onboarding.tracking_done,
+    onboarding.webhook_done,
+  ].filter(Boolean).length
 }
 
 export default function DashboardPage() {
@@ -122,8 +124,7 @@ export default function DashboardPage() {
     return () => document.removeEventListener('visibilitychange', handler)
   }, [load])
 
-  const setupStatus    = getSetupStatus(user?.onboarding)
-  const setupDoneCount = Object.values(setupStatus).filter(Boolean).length
+  const setupDoneCount = getSetupDoneCount(user?.onboarding)
   const setupLabel     = setupDoneCount === 3 ? 'Setup ✓' : `Setup (${setupDoneCount}/3)`
 
   const navActions = [
