@@ -16,7 +16,7 @@ import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
 
 interface UserProfile {
-  id: string; name: string; email: string; status: string
+  id: string; name: string; email: string; status: string; role: string
   onboarding?: Record<string, boolean>
   goals?: Record<string, Record<string, number>>
 }
