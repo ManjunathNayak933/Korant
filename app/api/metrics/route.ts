@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { cacheGet, cacheSet, metricsKey } from '@/lib/cache'
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 interface PartnerRow {
   partner_id: string; partner_type: 'influencer' | 'publication' | 'affiliate'
   clicks: number; sales: number; code_sales: number; cookie_sales: number
@@ -13,7 +12,6 @@ interface PartnerRow {
 
 export async function GET(request: NextRequest) {
   try {
-    // ── Auth ────────────────────────────────────────────────────────────────
     const role   = request.headers.get('x-user-role')!
     const userId = request.headers.get('x-user-id')!
     const { searchParams } = new URL(request.url)
@@ -26,7 +24,6 @@ export async function GET(request: NextRequest) {
     if (role === 'client' && clientId !== userId)
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    // Agency IDOR check
     if (role === 'agency') {
       const sb0 = getSupabaseAdmin()
       const { data: rel } = await sb0
@@ -35,7 +32,6 @@ export async function GET(request: NextRequest) {
       if (!rel) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // ── Cache ───────────────────────────────────────────────────────────────
     const cKey = metricsKey(clientId, month, campaignId)
     if (!noCache) {
       const cached = await cacheGet(cKey)
@@ -44,23 +40,19 @@ export async function GET(request: NextRequest) {
 
     const sb = getSupabaseAdmin()
 
-    // Compute next month boundary once — shared by geo RPC and budget filter
     const nm = new Date(month + '-01')
     nm.setMonth(nm.getMonth() + 1)
     const nextMonthStr = nm.toISOString().slice(0, 10)
 
-    // ── 1. Partner stats — pre-aggregated, reads ~10 rows not 100K events ──
-    //    Populated by trigger on events table (see supabase-stats-setup.sql)
+    // ── 1. Pre-aggregated partner stats ────────────────────────────────────
     let statsQuery = sb
       .from('partner_stats_monthly')
       .select('partner_id, partner_type, campaign_id, clicks, sales, code_sales, cookie_sales, revenue, commission')
       .eq('client_id', clientId)
       .eq('month', month)
-    // When campaignId is set: filter to that campaign only
-    // When no campaignId: fetch ALL rows for the month, aggregate across campaigns in JS below
     if (campaignId) statsQuery = statsQuery.eq('campaign_id', campaignId)
 
-    // ── 2. Partner metadata (tiny tables — always fast) ────────────────────
+    // ── 2. Partner metadata ─────────────────────────────────────────────────
     let infQuery = sb.from('influencers')
       .select('id, name, handle, fee, redirect_slug, discount_code, social_platform, is_active, created_at, campaign_id')
       .eq('client_id', clientId)
@@ -73,104 +65,136 @@ export async function GET(request: NextRequest) {
     if (campaignId) {
       infQuery = infQuery.eq('campaign_id', campaignId)
       pubQuery = pubQuery.eq('campaign_id', campaignId)
-      affQuery = affQuery.eq('campaign_id', campaignId)
+      // Only filter affiliates by campaign if the column exists
+      try { affQuery = (affQuery as any).eq('campaign_id', campaignId) } catch { /* skip */ }
     }
 
-    // ── 3. WhatsApp campaigns ───────────────────────────────────────────────
+    // ── 3. WhatsApp ─────────────────────────────────────────────────────────
     let waQuery = sb.from('whatsapp_campaigns')
       .select('sent, delivered, read, clicked, sales, revenue')
       .eq('client_id', clientId).eq('status', 'sent')
     if (campaignId) waQuery = waQuery.eq('campaign_id', campaignId)
 
-    // ── 4. Geo — GROUP BY server-side via RPC (returns ≤500 distinct points) ─
-    // Wrapped separately so a missing RPC doesn't crash the whole route.
-    const geoPointsPromise = sb.rpc('get_click_geo_monthly', {
-      p_client_id:   clientId,
-      p_month_start: `${month}-01`,
-      p_month_end:   nextMonthStr,
-    }).then(r => r.data || []).catch(() => [])  // ← silently returns [] if RPC missing
+    // ── 4. Geo — async IIFE so a missing RPC doesn't crash the route ────────
+    const geoPointsPromise = (async (): Promise<{ city: string; country: string; lat: number; lon: number; clicks: number }[]> => {
+      try {
+        const r = await sb.rpc('get_click_geo_monthly', {
+          p_client_id:   clientId,
+          p_month_start: `${month}-01`,
+          p_month_end:   nextMonthStr,
+        })
+        return (r.data || []) as any[]
+      } catch {
+        return []
+      }
+    })()
 
-    // Fire all other queries in parallel
-    const [statsRes, infRes, pubRes, affRes, waRes] = await Promise.all([
-      statsQuery, infQuery, pubQuery, affQuery, waQuery,
+    // Fire queries in parallel
+    const [statsRes, infRes, pubRes, affRes, waRes, geoPoints] = await Promise.all([
+      statsQuery, infQuery, pubQuery, affQuery, waQuery, geoPointsPromise,
     ])
-    const geoPoints = await geoPointsPromise
 
-    const partnerStats: PartnerRow[] = statsRes.data || []
+    const rawStats: PartnerRow[] = (statsRes.data || []).map((r: any) => ({
+      ...r,
+      // Postgres numeric columns may return as strings — coerce to numbers
+      clicks:      Number(r.clicks)      || 0,
+      sales:       Number(r.sales)       || 0,
+      code_sales:  Number(r.code_sales)  || 0,
+      cookie_sales:Number(r.cookie_sales)|| 0,
+      revenue:     Number(r.revenue)     || 0,
+      commission:  Number(r.commission)  || 0,
+    }))
+
+    // ── BUG FIX: Deduplicate by partner_id ──────────────────────────────────
+    // Without a campaign filter, partner_stats_monthly returns one row per
+    // (partner × campaign). Aggregate them so each partner appears once.
+    const dedupMap: Record<string, PartnerRow> = {}
+    for (const row of rawStats) {
+      if (!dedupMap[row.partner_id]) {
+        dedupMap[row.partner_id] = { ...row }
+      } else {
+        dedupMap[row.partner_id].clicks       += row.clicks
+        dedupMap[row.partner_id].sales        += row.sales
+        dedupMap[row.partner_id].code_sales   += row.code_sales
+        dedupMap[row.partner_id].cookie_sales += row.cookie_sales
+        dedupMap[row.partner_id].revenue      += row.revenue
+        dedupMap[row.partner_id].commission   += row.commission
+      }
+    }
+    const partnerStats = Object.values(dedupMap)
+
     const influencers  = infRes.data  || []
     const publications = pubRes.data  || []
     const affiliates   = affRes.data  || []
     const waCampaigns  = waRes.data   || []
 
-    // ── 5. Budget — still using creation-date filter (existing behaviour) ──
-    const infFees  = influencers .filter((i: any) => i.created_at >= `${month}-01` && i.created_at < nextMonthStr).reduce((s: number, i: any) => s + (i.fee  || 0), 0)
-    const pubCosts = publications.filter((p: any) => p.created_at >= `${month}-01` && p.created_at < nextMonthStr).reduce((s: number, p: any) => s + (p.cost || 0), 0)
+    // ── 5. Budget ────────────────────────────────────────────────────────────
+    const infFees  = influencers .filter((i: any) => i.created_at >= `${month}-01` && i.created_at < nextMonthStr).reduce((s: number, i: any) => s + (Number(i.fee)  || 0), 0)
+    const pubCosts = publications.filter((p: any) => p.created_at >= `${month}-01` && p.created_at < nextMonthStr).reduce((s: number, p: any) => s + (Number(p.cost) || 0), 0)
     const totalBudget = infFees + pubCosts
 
-    // ── 6. Build lookup maps from metadata ──────────────────────────────────
-    const infMeta: Record<string, typeof influencers[number]>   = {}
-    const pubMeta: Record<string, typeof publications[number]>  = {}
-    const affMeta: Record<string, typeof affiliates[number]>    = {}
-    influencers .forEach(i => { infMeta[i.id] = i })
-    publications.forEach(p => { pubMeta[p.id] = p })
-    affiliates  .forEach(a => { affMeta[a.id] = a })
+    // ── 6. Metadata lookup maps ──────────────────────────────────────────────
+    const infMeta: Record<string, any> = {}
+    const pubMeta: Record<string, any> = {}
+    const affMeta: Record<string, any> = {}
+    influencers .forEach((i: any) => { infMeta[i.id] = i })
+    publications.forEach((p: any) => { pubMeta[p.id] = p })
+    affiliates  .forEach((a: any) => { affMeta[a.id] = a })
 
-    // ── 7. Build per-partner stats arrays ───────────────────────────────────
+    // ── 7. Per-partner stats arrays (deduplicated) ───────────────────────────
     const influencerStats = partnerStats
       .filter(p => p.partner_type === 'influencer' && infMeta[p.partner_id])
       .map(p => {
-        const meta = infMeta[p.partner_id]
+        const m = infMeta[p.partner_id]
         return {
-          influencerId:    p.partner_id,
-          name:            meta.name,
-          handle:          meta.handle,
-          fee:             meta.fee,
-          redirect_slug:   meta.redirect_slug,
-          discount_code:   meta.discount_code,
-          social_platform: meta.social_platform,
-          is_active:       meta.is_active,
-          clicks:          p.clicks,
-          codeRedemptions: p.code_sales,
-          cookieSales:     p.cookie_sales,
-          totalSales:      p.sales,
-          revenueAttributed: p.revenue,
-          conversionRate:  p.clicks > 0 ? (p.sales / p.clicks) * 100 : 0,
-          avgCostPerClick: p.clicks > 0 && meta.fee > 0 ? meta.fee / p.clicks : 0,
-          // Drill-down stats (topCity, deviceBreakdown, topReferrer) are loaded
-          // lazily via /api/influencer-stats/:id to avoid per-row event reads
-          topCity:         null,
-          topReferrer:     null,
-          deviceBreakdown: null,
+          influencerId:     p.partner_id,
+          name:             m.name,
+          handle:           m.handle,
+          fee:              m.fee,
+          redirect_slug:    m.redirect_slug,
+          discount_code:    m.discount_code,
+          social_platform:  m.social_platform,
+          is_active:        m.is_active,
+          clicks:           p.clicks,
+          codeRedemptions:  p.code_sales,
+          cookieSales:      p.cookie_sales,
+          totalSales:       p.sales,
+          revenueAttributed:p.revenue,
+          conversionRate:   p.clicks > 0 ? (p.sales / p.clicks) * 100 : 0,
+          avgCostPerClick:  p.clicks > 0 && m.fee > 0 ? m.fee / p.clicks : 0,
+          topCity:          null,
+          topReferrer:      null,
+          deviceBreakdown:  null,
         }
       })
 
     const publicationStats = partnerStats
       .filter(p => p.partner_type === 'publication' && pubMeta[p.partner_id])
       .map(p => {
-        const meta = pubMeta[p.partner_id]
+        const m = pubMeta[p.partner_id]
         return {
-          publicationId:   p.partner_id,
-          name:            meta.publication_name,
-          cost:            meta.cost,
-          redirect_slug:   meta.redirect_slug,
-          is_active:       meta.is_active,
-          clicks:          p.clicks,
-          sales:           p.sales,
-          revenue:         p.revenue,
-          codeRedemptions: p.code_sales,
-          conversionRate:  p.clicks > 0 ? (p.sales / p.clicks) * 100 : 0,
-          costPerClick:    p.clicks > 0 && meta.cost > 0 ? meta.cost / p.clicks : 0,
+          publicationId:  p.partner_id,
+          name:           m.publication_name,
+          cost:           m.cost,
+          redirect_slug:  m.redirect_slug,
+          is_active:      m.is_active,
+          clicks:         p.clicks,
+          sales:          p.sales,
+          revenue:        p.revenue,
+          codeRedemptions:p.code_sales,
+          conversionRate: p.clicks > 0 ? (p.sales / p.clicks) * 100 : 0,
+          costPerClick:   p.clicks > 0 && m.cost > 0 ? m.cost / p.clicks : 0,
         }
       })
 
     const affiliateStats = partnerStats
       .filter(p => p.partner_type === 'affiliate' && affMeta[p.partner_id])
       .map(p => {
-        const meta = affMeta[p.partner_id]
+        const m = affMeta[p.partner_id]
         return {
           affiliateId:     p.partner_id,
-          name:            meta.name,
-          handle:          meta.handle,
+          name:            m.name,
+          handle:          m.handle,
           clicks:          p.clicks,
           sales:           p.sales,
           revenue:         p.revenue,
@@ -181,23 +205,22 @@ export async function GET(request: NextRequest) {
         }
       })
 
-    // ── 8. Channel totals — sum from partnerStats ───────────────────────────
+    // ── 8. Channel totals (from deduplicated stats) ──────────────────────────
     const sumBy = (type: string, field: keyof PartnerRow) =>
-      partnerStats.filter(p => p.partner_type === type).reduce((s, p) => s + (Number(p[field]) || 0), 0)
+      partnerStats.filter(p => p.partner_type === type).reduce((s, p) => s + (p[field] as number || 0), 0)
 
-    const infClicks  = sumBy('influencer',  'clicks');  const infSales  = sumBy('influencer',  'sales');  const infRev  = sumBy('influencer',  'revenue'); const infCode  = sumBy('influencer',  'code_sales')
-    const seoClicks  = sumBy('publication', 'clicks');  const seoSales  = sumBy('publication', 'sales');  const seoRev  = sumBy('publication', 'revenue'); const seoCode  = sumBy('publication', 'code_sales')
-    const affClicks  = sumBy('affiliate',   'clicks');  const affSales  = sumBy('affiliate',   'sales');  const affRev  = sumBy('affiliate',   'revenue'); const affCode  = sumBy('affiliate',   'code_sales')
+    const infClicks = sumBy('influencer', 'clicks'); const infSales = sumBy('influencer', 'sales'); const infRev = sumBy('influencer', 'revenue'); const infCode = sumBy('influencer', 'code_sales')
+    const seoClicks = sumBy('publication','clicks'); const seoSales = sumBy('publication','sales'); const seoRev = sumBy('publication','revenue'); const seoCode = sumBy('publication','code_sales')
+    const affClicks = sumBy('affiliate',  'clicks'); const affSales = sumBy('affiliate', 'sales');  const affRev = sumBy('affiliate', 'revenue');  const affCode = sumBy('affiliate', 'code_sales')
 
     const totalClicks = infClicks + seoClicks + affClicks
     const totalSales  = infSales  + seoSales  + affSales
     const totalRev    = infRev    + seoRev    + affRev
 
-    // ── 9. WhatsApp totals ──────────────────────────────────────────────────
+    // ── 9. WhatsApp ──────────────────────────────────────────────────────────
     const sumWa = (k: string) => waCampaigns.reduce((s: number, w: any) => s + (Number(w[k]) || 0), 0)
     const waData = { sent: sumWa('sent'), delivered: sumWa('delivered'), read: sumWa('read'), clicks: sumWa('clicked'), sales: sumWa('sales'), revenue: sumWa('revenue'), budget: 0, codeRedemptions: 0, avgCostPerClick: 0 }
 
-    // ── 10. Assemble result ─────────────────────────────────────────────────
     const allClicks = totalClicks + waData.clicks
     const allSales  = totalSales  + waData.sales
     const convRate  = allClicks > 0 ? (allSales / allClicks) * 100 : 0
@@ -224,7 +247,7 @@ export async function GET(request: NextRequest) {
       publications: publicationStats,
       affiliates:   affiliateStats,
       geoPoints,
-      events:       [],   // Raw events no longer returned — use /api/events if needed
+      events: [],
     }
 
     await cacheSet(cKey, result, 120)
