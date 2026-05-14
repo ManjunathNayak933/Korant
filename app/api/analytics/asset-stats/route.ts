@@ -72,17 +72,23 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    // 5. Also check visitor_first_touch for return data
+    // Check visitor_first_touch for return data — paginated in chunks of 500
     const allVisitorIds = [...new Set(channelTps.map(t => t.visitor_id))]
-    const { data: firstTouches } = allVisitorIds.length > 0
-      ? await sb.from('visitor_first_touch')
-          .select('visitor_id, total_visits, converted')
-          .eq('client_id', clientId)
-          .in('visitor_id', allVisitorIds.slice(0, 500))
-      : { data: [] }
-
     const ftMap: Record<string, any> = {}
-    ;(firstTouches || []).forEach(ft => { ftMap[ft.visitor_id] = ft })
+    if (allVisitorIds.length > 0) {
+      const chunkSize = 500
+      const chunks: string[][] = []
+      for (let i = 0; i < allVisitorIds.length; i += chunkSize) chunks.push(allVisitorIds.slice(i, i + chunkSize))
+      const results = await Promise.all(
+        chunks.map(chunk =>
+          sb.from('visitor_first_touch')
+            .select('visitor_id, total_visits, converted')
+            .eq('client_id', clientId)
+            .in('visitor_id', chunk)
+        )
+      )
+      results.forEach(r => (r.data || []).forEach((ft: any) => { ftMap[ft.visitor_id] = ft }))
+    }
 
     // 6. Build final stats per partner
     const partnerStats = Object.values(partnerMap).map(p => {

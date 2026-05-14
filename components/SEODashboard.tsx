@@ -4,10 +4,10 @@ import AddPublicationModal from './AddPublicationModal'
 import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
-import AssetInsights from './AssetInsights'
-import { useAssetData } from './AssetInsights'
+import AssetInsights, { useAssetData } from './AssetInsights'
 
 interface Pub { id: string; publication_name: string; author_name?: string; type: string; article_url?: string; redirect_slug: string; destination_url: string; estimated_reach?: number; is_sponsored: boolean; published_at?: string; cost: number; is_active: boolean; campaign_id?: string }
+interface PubStats { clicks: number; sales: number; revenue: number; codeRedemptions?: number }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 
 export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
@@ -15,7 +15,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
   const [loading, setLoading]     = useState(true)
   const [showAdd, setShowAdd]     = useState(false)
   const [statsModal, setStatsModal] = useState<Pub | null>(null)
-  const [eventMap, setEventMap]   = useState<Record<string, { clicks: number; sales: number; revenue: number }>>({})
+  const [eventMap, setEventMap]   = useState<Record<string, PubStats>>({})
   const [copied, setCopied]       = useState<string | null>(null)
   const [selectedCampaign, setSelectedCampaign] = useState('')
 
@@ -35,12 +35,10 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
       if (cancelled) return
       const [pubData, metricsData] = await Promise.all([pubRes.json(), metricsRes.json()])
       setPubs(Array.isArray(pubData) ? pubData : [])
-      const map: Record<string, { clicks: number; sales: number; revenue: number }> = {}
-      for (const e of (metricsData.events || [])) {
-        if (!e.publication_id) continue
-        if (!map[e.publication_id]) map[e.publication_id] = { clicks: 0, sales: 0, revenue: 0 }
-        if (e.type === 'click') map[e.publication_id].clicks++
-        else { map[e.publication_id].sales++; map[e.publication_id].revenue += e.order_value || 0 }
+      // Build per-publication stats map from server-computed publications array
+      const map: Record<string, PubStats> = {}
+      for (const pub of (metricsData.publications || [])) {
+        map[pub.publicationId] = { clicks: pub.clicks || 0, sales: pub.sales || 0, revenue: pub.revenue || 0, codeRedemptions: pub.codeRedemptions || 0 }
       }
       setEventMap(map)
       setLoading(false)
@@ -55,7 +53,8 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
   }
 
   const toggleActive = async (id: string, current: boolean) => {
-    await fetch(`/api/publications/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: !current }) })
+    const res = await fetch(`/api/publications/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: !current }) })
+    if (!res.ok) { alert('Failed to update publication status. Please try again.'); return }
     setPubs(prev => prev.map(p => p.id === id ? { ...p, is_active: !current } : p))
   }
 

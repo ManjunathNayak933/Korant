@@ -42,8 +42,8 @@ function CrossScatter({ data }: { data: ScatterPoint[] }) {
         ))}
         <div style={{ position: 'absolute', bottom: -22, left: 0, right: 0, textAlign: 'center', fontSize: 9, color: 'var(--text-dim)' }}>← Unique Reach →</div>
         {data.map(d => {
-          const x = (d.unique / maxUnique) * 92 + 4
-          const y = 100 - ((d.conversionRate / Math.max(maxConv, 1)) * 92 + 4)
+          const x = (d.unique / maxUnique) * 80 + 10
+          const y = 100 - ((d.conversionRate / Math.max(maxConv, 1)) * 80 + 10)
           const size = Math.max(8, Math.min(22, (d.freshnessRate / 100) * 18 + 6))
           return (
             <div key={d.id}
@@ -114,7 +114,7 @@ export default function OverviewAnalytics({
   onData?: (d: OverviewData) => void
 }) {
   const [data, setData]       = useState<OverviewData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [view, setView]       = useState<'scatter' | 'overlap'>('scatter')
 
   useEffect(() => {

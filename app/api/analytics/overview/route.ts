@@ -52,13 +52,23 @@ export async function GET(request: NextRequest) {
       if (tp.event_type === 'purchase') partnerMap[tp.partner_id].conversions++
     })
 
-    // Get conversion data from visitor_first_touch
+    // Get conversion data from visitor_first_touch — paginated in chunks of 500
     const allVids = [...new Set(tps.map(t => t.visitor_id))]
-    const { data: ftData } = allVids.length > 0
-      ? await sb.from('visitor_first_touch').select('visitor_id, converted, total_visits').eq('client_id', clientId).in('visitor_id', allVids.slice(0, 500))
-      : { data: [] }
     const ftMap: Record<string, any> = {}
-    ;(ftData || []).forEach(ft => { ftMap[ft.visitor_id] = ft })
+    if (allVids.length > 0) {
+      const chunkSize = 500
+      const chunks: string[][] = []
+      for (let i = 0; i < allVids.length; i += chunkSize) chunks.push(allVids.slice(i, i + chunkSize))
+      const results = await Promise.all(
+        chunks.map(chunk =>
+          sb.from('visitor_first_touch')
+            .select('visitor_id, converted, total_visits')
+            .eq('client_id', clientId)
+            .in('visitor_id', chunk)
+        )
+      )
+      results.forEach(r => (r.data || []).forEach((ft: any) => { ftMap[ft.visitor_id] = ft }))
+    }
 
     // Scatter data — all partners across all channels
     const scatterData = Object.values(partnerMap).map(p => {
@@ -81,34 +91,32 @@ export async function GET(request: NextRequest) {
       }
     }).filter(p => p.unique > 0).sort((a, b) => b.unique - a.unique)
 
-    // Audience overlap — top partner pairs with shared visitors (Option B: cross-channel)
-    const partnerIds = Object.keys(partnerMap).slice(0, 15)
-    const overlapPairs: {
-      partnerA: string; nameA: string; channelA: string
-      partnerB: string; nameB: string; channelB: string
-      overlap: number; overlapPct: number
-    }[] = []
-
-    for (let i = 0; i < partnerIds.length; i++) {
-      for (let j = i + 1; j < partnerIds.length; j++) {
-        const aVis = partnerMap[partnerIds[i]]?.visitors || new Set()
-        const bVis = partnerMap[partnerIds[j]]?.visitors || new Set()
-        const overlap = [...aVis].filter(v => bVis.has(v)).length
-        if (overlap > 0) {
-          overlapPairs.push({
-            partnerA:   partnerIds[i],
-            nameA:      partnerMap[partnerIds[i]]?.name || '',
-            channelA:   partnerMap[partnerIds[i]]?.channel || '',
-            partnerB:   partnerIds[j],
-            nameB:      partnerMap[partnerIds[j]]?.name || '',
-            channelB:   partnerMap[partnerIds[j]]?.channel || '',
-            overlap,
-            overlapPct: Math.round(overlap / Math.min(aVis.size, bVis.size) * 100),
-          })
+    // Audience overlap — pair-counting from visitorAllPartners (O(visitors), not O(partners²×visitors))
+    const pairOverlap: Record<string, number> = {}
+    Object.values(visitorAllPartners).forEach(partnerSet => {
+      const pids = [...partnerSet].filter(pid => partnerMap[pid])
+      for (let i = 0; i < pids.length; i++) {
+        for (let j = i + 1; j < pids.length; j++) {
+          const key = pids[i] < pids[j] ? `${pids[i]}||${pids[j]}` : `${pids[j]}||${pids[i]}`
+          pairOverlap[key] = (pairOverlap[key] || 0) + 1
         }
       }
-    }
-    overlapPairs.sort((a, b) => b.overlap - a.overlap)
+    })
+    const overlapPairs = Object.entries(pairOverlap)
+      .map(([key, overlap]) => {
+        const [aId, bId] = key.split('||')
+        const pa = partnerMap[aId], pb = partnerMap[bId]
+        if (!pa || !pb) return null
+        return {
+          nameA: pa.name, channelA: pa.channel,
+          nameB: pb.name, channelB: pb.channel,
+          overlap,
+          overlapPct: Math.round(overlap / Math.min(pa.visitors.size, pb.visitors.size) * 100),
+        }
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => b.overlap - a.overlap)
+      .slice(0, 20)
 
     // Universe stats
     const totalUniverse    = new Set(tps.map(t => t.visitor_id)).size
@@ -118,7 +126,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       universe: { totalUniverse, totalMultiTouch, totalSingleTouch },
       scatterData,
-      overlapPairs: overlapPairs.slice(0, 20),
+      overlapPairs,
     })
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || 'Internal error' }, { status: 500 })

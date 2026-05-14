@@ -4,10 +4,11 @@ import AddInfluencerModal from './AddInfluencerModal'
 import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
-import AssetInsights from './AssetInsights'
-import { useAssetData } from './AssetInsights'
+import AssetInsights, { useAssetData } from './AssetInsights'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
+interface InfluencerMetrics { clicks: number; totalSales: number; conversionRate: number; revenueAttributed: number; codeRedemptions: number; avgCostPerClick: number }
+interface VisitorStats { unique: number; returned: number; shared: number; returnRate: number; sharedRate: number }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 
 const SORT_OPTIONS = [
@@ -18,7 +19,7 @@ const SORT_OPTIONS = [
 
 export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
   const [influencers, setInfluencers] = useState<Influencer[]>([])
-  const [metrics, setMetrics] = useState<Record<string, any>>({})
+  const [metrics, setMetrics] = useState<Record<string, InfluencerMetrics>>({})
   const [selectedCampaign, setSelectedCampaign] = useState('')
   const [sort, setSort] = useState('clicks')
   const [loading, setLoading] = useState(true)
@@ -29,7 +30,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
 
   // Fetch asset/visitor data for all influencers
   const { data: assetData } = useAssetData(clientId, month, 'influencer')
-  const visitorMap: Record<string, { unique: number; returned: number; shared: number; returnRate: number; sharedRate: number }> = {}
+  const visitorMap: Record<string, VisitorStats> = {}
   ;(assetData?.partnerStats || []).forEach(p => { visitorMap[p.id] = p })
 
   useEffect(() => {
@@ -53,12 +54,14 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
   }, [clientId, month, selectedCampaign])
 
   const toggleActive = async (id: string, current: boolean) => {
-    await fetch(`/api/influencers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: !current }) })
+    const res = await fetch(`/api/influencers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: !current }) })
+    if (!res.ok) { alert('Failed to update influencer status. Please try again.'); return }
     setInfluencers(prev => prev.map(i => i.id === id ? { ...i, is_active: !current } : i))
   }
 
   const deleteInfluencer = async (id: string) => {
-    await fetch(`/api/influencers/${id}`, { method: 'DELETE' })
+    const res = await fetch(`/api/influencers/${id}`, { method: 'DELETE' })
+    if (!res.ok) { alert('Failed to delete influencer. Please try again.'); setDeleteConfirm(null); return }
     setInfluencers(prev => prev.filter(i => i.id !== id))
     setDeleteConfirm(null)
   }
@@ -125,7 +128,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
               <div key={inf.id} style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 16, opacity: inf.is_active ? 1 : 0.45 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
                   <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'var(--surface2)', border: '0.5px solid var(--border2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 500, color: 'var(--amber)', flexShrink: 0 }}>
-                    {inf.name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2)}
+                    {(inf.name || '?').split(' ').filter(Boolean).map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>{inf.name}</div>
@@ -140,7 +143,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
                     ['Clicks', m.clicks || 0],
                     ['Sales',  m.totalSales || 0],
                     ['Conv',   `${(m.conversionRate||0).toFixed(1)}%`],
-                    ['Rev',    `₹${((m.revenueAttributed||0)/1000).toFixed(0)}k`],
+                    ['Rev',    `₹${Math.round((m.revenueAttributed||0)/1000)}k`],
                   ].map(([l,v]) => (
                     <div key={l as string} style={{ textAlign: 'center', background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 5, padding: '6px 4px' }}>
                       <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{v}</div>

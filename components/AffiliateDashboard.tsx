@@ -4,8 +4,7 @@ import AddAffiliateModal from './AddAffiliateModal'
 import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
-import AssetInsights from './AssetInsights'
-import { useAssetData } from './AssetInsights'
+import AssetInsights, { useAssetData } from './AssetInsights'
 import { FormField, Textarea } from './FormFields'
 
 interface Affiliate {
@@ -66,15 +65,14 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
       setAffiliates(Array.isArray(affData) ? affData : [])
       setPrograms(Array.isArray(progData) ? progData : [])
       setAllMetrics(metricsData)
+      // Build per-affiliate stats map from server-computed affiliates array
       const map: Record<string, AffStats> = {}
-      for (const e of (metricsData.rawEvents || metricsData.events || [])) {
-        if (!e?.affiliate_id) continue
-        if (!map[e.affiliate_id]) map[e.affiliate_id] = { clicks: 0, sales: 0, revenue: 0, commission: 0 }
-        if (e.type === 'click') map[e.affiliate_id].clicks++
-        else {
-          map[e.affiliate_id].sales++
-          map[e.affiliate_id].revenue    += e.order_value      || 0
-          map[e.affiliate_id].commission += e.commission_amount || 0
+      for (const aff of (metricsData.affiliates || [])) {
+        map[aff.affiliateId] = {
+          clicks:     aff.clicks     || 0,
+          sales:      aff.sales      || 0,
+          revenue:    aff.revenue    || 0,
+          commission: aff.commission || 0,
         }
       }
       setAffStats(map)
@@ -86,13 +84,15 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
 
   const pause = async () => {
     if (!pauseModal) return
-    await fetch(`/api/affiliates/${pauseModal.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: false, paused_reason: pauseReason }) })
+    const res = await fetch(`/api/affiliates/${pauseModal.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: false, paused_reason: pauseReason }) })
+    if (!res.ok) { alert('Failed to pause affiliate. Please try again.'); return }
     setAffiliates(prev => prev.map(a => a.id === pauseModal.id ? { ...a, is_active: false, paused_at: new Date().toISOString(), paused_reason: pauseReason } : a))
     setPauseModal(null); setPauseReason('')
   }
 
   const resume = async (id: string) => {
-    await fetch(`/api/affiliates/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: true }) })
+    const res = await fetch(`/api/affiliates/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: true }) })
+    if (!res.ok) { alert('Failed to resume affiliate. Please try again.'); return }
     setAffiliates(prev => prev.map(a => a.id === id ? { ...a, is_active: true, paused_at: undefined } : a))
   }
 

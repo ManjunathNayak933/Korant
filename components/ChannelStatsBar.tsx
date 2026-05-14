@@ -23,7 +23,7 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
     const load = async () => {
       setLoading(true)
       const m      = month || new Date().toISOString().slice(0, 7)
-      const url    = `/api/metrics?clientId=${clientId}&month=${m}${campaignId ? `&campaignId=${campaignId}&noCache=1` : ''}`
+      const url    = `/api/metrics?clientId=${clientId}&month=${m}&noCache=1${campaignId ? `&campaignId=${campaignId}` : ''}`
       const visUrl = `/api/analytics/asset-stats?clientId=${clientId}&month=${m}&channel=${channel}`
 
       const [metricsRes, visRes] = await Promise.allSettled([fetch(url), fetch(visUrl)])
@@ -65,9 +65,9 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
   const allSales   = c.sales   || 0
   const allRevenue = c.revenue || 0
   const allBudget  = c.budget  || 0
-  const codeSales  = stats?.summary?.codeRedemptions || 0
+  const codeSales  = c.codeRedemptions || 0
   const convRate   = allClicks > 0 ? ((allSales / allClicks) * 100).toFixed(2) : '0.00'
-  const cpc        = allClicks > 0 && allBudget > 0 ? (allBudget / allClicks).toFixed(1) : null
+  const cpc        = c.avgCostPerClick || (allClicks > 0 && allBudget > 0 ? (allBudget / allClicks) : null)
   const cps        = allSales  > 0 && allBudget > 0 ? (allBudget / allSales).toFixed(0)  : null
 
   // Visitor stats
@@ -102,15 +102,15 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
         {kpiCell('Clicks',     allClicks.toLocaleString('en-IN'))}
         {kpiCell('Sales',      allSales.toLocaleString('en-IN'))}
         {kpiCell('Code sales', codeSales.toLocaleString('en-IN'))}
-        {kpiCell('Revenue',    `₹${(allRevenue / 100000).toFixed(1)}L`, color)}
+        {kpiCell('Revenue',    `₹${Math.round(allRevenue / 1000)}k`, color)}
         {kpiCell('Conv rate',  `${convRate}%`)}
       </div>
 
       {/* KPI row 2 — budget + visitor stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border3)' }}>
         {kpiCell(channel === 'seo' ? 'Total cost' : 'Total budget',
-          allBudget > 0 ? `₹${(allBudget / 1000).toFixed(0)}k` : '—')}
-        {kpiCell('Cost / click', cpc ? `₹${cpc}` : '—')}
+          allBudget > 0 ? `₹${Math.round(allBudget / 1000)}k` : '—')}
+        {kpiCell('Cost / click', cpc ? `₹${Number(cpc).toFixed(1)}` : '—')}
         {kpiCell('Unique visitors', unique.toLocaleString('en-IN'), 'var(--amber)',
           unique === 0 ? 'install beacon' : undefined)}
         {kpiCell('Returned', returned.toLocaleString('en-IN'), '#4a9eff',
@@ -153,8 +153,8 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
             height={80}
           />
         ) : channel === 'seo' ? (
-          <div className="chart-container">
-            <div className="chart-title">Cost efficiency</div>
+          <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
+            <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 14 }}>Cost efficiency</div>
             {cpc ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 8 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -175,8 +175,8 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
             )}
           </div>
         ) : (
-          <div className="chart-container">
-            <div className="chart-title">Commission summary</div>
+          <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
+            <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 14 }}>Commission summary</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 8 }}>
               {allSales > 0 ? (
                 <>

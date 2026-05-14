@@ -13,7 +13,6 @@ const JWT_SECRET = new TextEncoder().encode(
 const PUBLIC_PATHS = [
   '/login',
   '/paused',
-  '/api/beacon',
   '/affiliate/join',
   '/r/',
   '/api/auth/',
@@ -21,6 +20,7 @@ const PUBLIC_PATHS = [
   '/api/whatsapp/connect',
   '/api/affiliate-signup/',
   '/api/marketplace/',
+  '/api/beacon',
 ]
 
 function isPublic(path: string): boolean {
@@ -52,10 +52,6 @@ export async function middleware(request: NextRequest) {
       res.headers.set('Access-Control-Allow-Origin', allowed)
       return res
     }
-  }
-
-  if (pathname.startsWith('/api/beacon')) {
-  return NextResponse.next()
   }
 
   // Get token
@@ -109,28 +105,11 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  const userStatus = payload.status as string || 'active'
-
-  // Paused accounts: block all write operations (POST/PUT/PATCH/DELETE on data APIs)
-  const isWriteOp = ['POST','PUT','PATCH','DELETE'].includes(request.method)
-  const isDataApi = pathname.startsWith('/api/') &&
-    !pathname.startsWith('/api/auth/') &&
-    !pathname.startsWith('/api/webhook/')
-  const isPausedBlocked = [
-    '/api/influencers', '/api/publications', '/api/affiliates',
-    '/api/campaigns', '/api/whatsapp/', '/api/clients/goals',
-  ].some(p => pathname.startsWith(p))
-
-  if (userStatus === 'paused' && isWriteOp && isPausedBlocked) {
-    return NextResponse.json({ error: 'Your account is paused. Upgrade your plan to continue.' }, { status: 402 })
-  }
-
   // Inject user info in headers for API routes
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set('x-user-id', clientId)
   requestHeaders.set('x-user-role', role)
   requestHeaders.set('x-user-email', payload.email || '')
-  requestHeaders.set('x-user-status', userStatus)
 
   return NextResponse.next({ request: { headers: requestHeaders } })
 }

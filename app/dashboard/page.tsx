@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import DashboardNav from '@/components/DashboardNav'
 import ChannelTabs from '@/components/ChannelTabs'
@@ -15,7 +15,29 @@ import WhatsAppDashboard from '@/components/WhatsAppDashboard'
 import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
 
-const BASE_URL = typeof window !== 'undefined' ? window.location.origin : ''
+interface UserProfile {
+  id: string; name: string; email: string; status: string
+  onboarding?: Record<string, boolean>
+  goals?: Record<string, Record<string, number>>
+}
+interface ChannelData {
+  clicks: number; sales: number; revenue: number; budget: number
+  codeRedemptions?: number; avgCostPerClick?: number
+  sent?: number; read?: number
+}
+interface MetricsSummary {
+  totalClicks: number; totalSales: number; codeRedemptions: number
+  conversionRate: number; revenueAttributed: number; totalBudget: number
+  avgCostPerClick: number; avgCostPerSale: number
+}
+interface MetricsData {
+  summary: MetricsSummary
+  channels: Record<string, ChannelData>
+  influencers: any[]; publications: any[]; affiliates: any[]
+  geoPoints: any[]
+  eventsTruncated?: boolean
+}
+interface FeedData { items: any[]; alerts: { message: string }[] }
 
 const TABS = [
   { id: 'overview',    label: 'Overview',       icon: '▦' },
@@ -41,9 +63,9 @@ function getSetupStatus(onboarding: Record<string, boolean> = {}) {
 export default function DashboardPage() {
   const router = useRouter()
   const [activeTab, setActiveTab]               = useState('overview')
-  const [user, setUser]                         = useState<any>(null)
-  const [metrics, setMetrics]                   = useState<any>(null)
-  const [feed, setFeed]                         = useState<any>({ items: [], alerts: [] })
+  const [user, setUser]                         = useState<UserProfile | null>(null)
+  const [metrics, setMetrics]                   = useState<MetricsData | null>(null)
+  const [feed, setFeed]                         = useState<FeedData>({ items: [], alerts: [] })
   const [campaigns, setCampaigns]               = useState<any[]>([])
   const [requests, setRequests]                 = useState<any[]>([])
   const [loading, setLoading]                   = useState(true)
@@ -51,24 +73,23 @@ export default function DashboardPage() {
   const [showSetup, setShowSetup]               = useState(false)
   const [overviewCampaign, setOverviewCampaign] = useState('')
   const [universeStats, setUniverseStats]       = useState({ totalUniverse: 0, totalMultiTouch: 0, totalSingleTouch: 0 })
+  const [baseUrl, setBaseUrl]                   = useState('')
 
-  const monthOptions = Array.from({ length: 3 }, (_, i) => {
+  // Stable base URL after hydration
+  useEffect(() => { setBaseUrl(window.location.origin) }, [])
+
+  // Memoized month options — only recompute once per render cycle, not on every render
+  const monthOptions = useMemo(() => Array.from({ length: 3 }, (_, i) => {
     const d = new Date()
     d.setDate(1)
     d.setMonth(d.getMonth() - i)
     const val   = d.toISOString().slice(0, 7)
     const label = d.toLocaleString('default', { month: 'long', year: 'numeric' })
     return { val, label }
-  })
+  }), [])
   const [currentMonth, setCurrentMonth] = useState(monthOptions[0].val)
 
-  useEffect(() => {
-    if (activeTab === 'overview' && user) {
-      fetch(`/api/metrics?clientId=${user.id}&month=${currentMonth}&noCache=1`)
-        .then(r => r.json()).then(setMetrics).catch(() => {})
-    }
-  }, [activeTab]) // eslint-disable-line
-
+  // Full load — called on mount, visibility change, and when month/campaign deps change
   const load = useCallback(async () => {
     const meRes = await fetch('/api/auth/me')
     if (!meRes.ok) { router.push('/login'); return }
@@ -89,16 +110,12 @@ export default function DashboardPage() {
     setCampaigns(Array.isArray(campData) ? campData : [])
     setRequests(Array.isArray(reqData) ? reqData : [])
     setLoading(false)
-  }, [currentMonth]) // eslint-disable-line
+  }, [currentMonth, overviewCampaign]) // proper deps — no stale closures
 
+  // Trigger full load on mount and whenever month/campaign deps change
   useEffect(() => { load() }, [load])
 
-  useEffect(() => {
-    if (!user) return
-    fetch(`/api/metrics?clientId=${user.id}&month=${currentMonth}&noCache=1${overviewCampaign ? '&campaignId=' + overviewCampaign : ''}`)
-      .then(r => r.json()).then(setMetrics).catch(() => {})
-  }, [overviewCampaign, currentMonth]) // eslint-disable-line
-
+  // Visibility change — refresh when user returns to tab
   useEffect(() => {
     const handler = () => { if (document.visibilityState === 'visible') load() }
     document.addEventListener('visibilitychange', handler)
@@ -114,6 +131,14 @@ export default function DashboardPage() {
     { label: 'Payouts',    color: 'green' as const, href: '/payouts' },
     { label: setupLabel,   color: 'muted' as const, onClick: () => setShowSetup(true) },
   ]
+
+  const MonthPicker = () => (
+    <>
+      {monthOptions.map(m => (
+        <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
+      ))}
+    </>
+  )
 
   if (loading) return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
@@ -141,7 +166,7 @@ export default function DashboardPage() {
   ]
 
   const kpiCell = (label: string, value: string, dim?: string) => (
-    <div key={label} style={{ padding: '18px 20px', borderRight: '0.5px solid var(--border)' }}>
+    <div style={{ padding: '18px 20px', borderRight: '0.5px solid var(--border)' }}>
       <div style={{ fontSize: 9, letterSpacing: '0.5px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
       {dim && <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4 }}>{dim}</div>}
@@ -153,19 +178,22 @@ export default function DashboardPage() {
       <DashboardNav user={user} actions={navActions} brandName={user?.name} onRefresh={load} />
       <ChannelTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
-      {feed.alerts?.length > 0 && (
+      {(feed.alerts?.length > 0 || (metrics as any)?.eventsTruncated) && (
         <div style={{ background: 'var(--amber-bg)', borderBottom: '0.5px solid var(--amber-border)', padding: '9px 24px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--amber)', flexShrink: 0 }} />
-          <span style={{ fontSize: 11, color: 'var(--amber)', flex: 1 }}>{feed.alerts.map((a: any) => a.message).join(' · ')}</span>
+          <span style={{ fontSize: 11, color: 'var(--amber)', flex: 1 }}>
+            {[
+              ...(feed.alerts || []).map((a: any) => a.message),
+              ...((metrics as any)?.eventsTruncated ? ['High event volume — analytics capped at 5,000 events this month. Contact support to enable full aggregation.'] : []),
+            ].join(' · ')}
+          </span>
         </div>
       )}
 
       {activeTab !== 'overview' && (
         <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 2 }}>Period:</span>
-          {monthOptions.map(m => (
-            <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
-          ))}
+          <MonthPicker />
         </div>
       )}
 
@@ -176,9 +204,7 @@ export default function DashboardPage() {
             {/* Period + Campaign strip */}
             <div style={{ padding: '10px 0', borderBottom: '0.5px solid var(--border)', margin: '0 -24px', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Period:</span>
-              {monthOptions.map(m => (
-                <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
-              ))}
+              <MonthPicker />
               <div style={{ width: '0.5px', height: 16, background: 'var(--border2)', margin: '0 4px' }} />
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Campaign:</span>
               <button onClick={() => setOverviewCampaign('')} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${!overviewCampaign ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: !overviewCampaign ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>All</button>
@@ -199,7 +225,7 @@ export default function DashboardPage() {
             {/* KPI row 2 — 5 cols: revenue, budget, cost/click, multi-channel, single-channel */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
               {kpiCell('Revenue',        `₹${((s.revenueAttributed||0)/100000).toFixed(1)}L`)}
-              {kpiCell('Total budget',   `₹${((s.totalBudget||0)/1000).toFixed(0)}k`)}
+              {kpiCell('Total budget',   `₹${Math.round((s.totalBudget||0)/1000)}k`)}
               {kpiCell('Cost / click',   s.avgCostPerClick ? `₹${s.avgCostPerClick.toFixed(1)}` : '—')}
               {kpiCell('Multi-channel',  universeStats.totalMultiTouch.toLocaleString('en-IN'), 'touched 2+ partners')}
               {kpiCell('Single-channel', universeStats.totalSingleTouch.toLocaleString('en-IN'), 'one partner only')}
@@ -244,7 +270,7 @@ export default function DashboardPage() {
                         <div style={{ fontSize:12, color:'var(--text-secondary)', fontWeight:500 }}>{inf.name}</div>
                         <div style={{ fontSize:10, color:'var(--text-dim)' }}>{inf.clicks} clicks · {inf.totalSales} sales</div>
                       </div>
-                      <div style={{ fontSize:12, color:'var(--amber)' }}>₹{(inf.revenueAttributed||0).toLocaleString('en-IN')}</div>
+                      <div style={{ fontSize:12, color:'var(--amber)' }}>₹{Math.round((inf.revenueAttributed||0)/1000)}k</div>
                     </div>
                   ))
                 ) : (
@@ -268,25 +294,25 @@ export default function DashboardPage() {
 
         {activeTab === 'influencer' && (
           <div style={{ padding: '24px 0' }}>
-            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'seo' && (
           <div style={{ padding: '24px 0' }}>
-            <SEODashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <SEODashboard clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'affiliate' && (
           <div style={{ padding: '24px 0' }}>
-            <AffiliateDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <AffiliateDashboard clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
           </div>
         )}
 
         {activeTab === 'whatsapp' && (
           <div style={{ padding: '24px 0' }}>
-            <WhatsAppDashboard clientId={user?.id} campaigns={campaigns} baseUrl={BASE_URL} month={currentMonth} />
+            <WhatsAppDashboard clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} />
           </div>
         )}
 
@@ -307,8 +333,16 @@ export default function DashboardPage() {
                     {req.message && <div style={{ fontSize:12, color:'var(--text-dim)', fontStyle:'italic' }}>{req.message}</div>}
                   </div>
                   <div style={{ display:'flex', gap:8 }}>
-                    <button onClick={async () => { await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept'})}); setRequests(prev=>prev.filter(r=>r.id!==req.id)) }} style={{ border:'0.5px solid var(--green)', color:'var(--green)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Accept</button>
-                    <button onClick={async () => { await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})}); setRequests(prev=>prev.filter(r=>r.id!==req.id)) }} style={{ border:'0.5px solid var(--red)', color:'var(--red)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Decline</button>
+                    <button onClick={async () => {
+                      const res = await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept'})})
+                      if (!res.ok) { alert('Failed to accept request. Please try again.'); return }
+                      setRequests(prev=>prev.filter(r=>r.id!==req.id))
+                    }} style={{ border:'0.5px solid var(--green)', color:'var(--green)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Accept</button>
+                    <button onClick={async () => {
+                      const res = await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})})
+                      if (!res.ok) { alert('Failed to decline request. Please try again.'); return }
+                      setRequests(prev=>prev.filter(r=>r.id!==req.id))
+                    }} style={{ border:'0.5px solid var(--red)', color:'var(--red)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Decline</button>
                   </div>
                 </div>
               </div>
