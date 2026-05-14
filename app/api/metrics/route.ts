@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     //    Populated by trigger on events table (see supabase-stats-setup.sql)
     let statsQuery = sb
       .from('partner_stats_monthly')
-      .select('partner_id, partner_type, clicks, sales, code_sales, cookie_sales, revenue, commission')
+      .select('partner_id, partner_type, campaign_id, clicks, sales, code_sales, cookie_sales, revenue, commission')
       .eq('client_id', clientId)
       .eq('month', month)
     if (campaignId) statsQuery = statsQuery.eq('campaign_id', campaignId)
