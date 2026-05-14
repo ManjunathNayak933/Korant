@@ -82,24 +82,25 @@ export async function GET(request: NextRequest) {
       .eq('client_id', clientId).eq('status', 'sent')
     if (campaignId) waQuery = waQuery.eq('campaign_id', campaignId)
 
-    // ── 4. Geo — GROUP BY server-side via RPC (returns ≤500 distinct points, not raw events) ─
-    const geoQuery = sb.rpc('get_click_geo_monthly', {
+    // ── 4. Geo — GROUP BY server-side via RPC (returns ≤500 distinct points) ─
+    // Wrapped separately so a missing RPC doesn't crash the whole route.
+    const geoPointsPromise = sb.rpc('get_click_geo_monthly', {
       p_client_id:   clientId,
       p_month_start: `${month}-01`,
       p_month_end:   nextMonthStr,
-    })
+    }).then(r => r.data || []).catch(() => [])  // ← silently returns [] if RPC missing
 
-    // Fire all queries in parallel
-    const [statsRes, infRes, pubRes, affRes, waRes, geoRes] = await Promise.all([
-      statsQuery, infQuery, pubQuery, affQuery, waQuery, geoQuery,
+    // Fire all other queries in parallel
+    const [statsRes, infRes, pubRes, affRes, waRes] = await Promise.all([
+      statsQuery, infQuery, pubQuery, affQuery, waQuery,
     ])
+    const geoPoints = await geoPointsPromise
 
     const partnerStats: PartnerRow[] = statsRes.data || []
     const influencers  = infRes.data  || []
     const publications = pubRes.data  || []
     const affiliates   = affRes.data  || []
     const waCampaigns  = waRes.data   || []
-    const geoPoints    = (geoRes.data || []) as { city: string; country: string; lat: number; lon: number; clicks: number }[]
 
     // ── 5. Budget — still using creation-date filter (existing behaviour) ──
     const infFees  = influencers .filter((i: any) => i.created_at >= `${month}-01` && i.created_at < nextMonthStr).reduce((s: number, i: any) => s + (i.fee  || 0), 0)
