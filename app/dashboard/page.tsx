@@ -80,13 +80,13 @@ export default function DashboardPage() {
   // Stable base URL after hydration
   useEffect(() => { setBaseUrl(window.location.origin) }, [])
 
-  // Memoized month options — only recompute once per render cycle, not on every render
+  // Use UTC month values — the DB stores months via to_char(timestamp, 'YYYY-MM')
+  // which is UTC. Using toISOString() on a local date shifts IST dates back one month.
   const monthOptions = useMemo(() => Array.from({ length: 3 }, (_, i) => {
-    const d = new Date()
-    d.setDate(1)
-    d.setMonth(d.getMonth() - i)
-    const val   = d.toISOString().slice(0, 7)
-    const label = d.toLocaleString('default', { month: 'long', year: 'numeric' })
+    const now = new Date()
+    const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
+    const val   = d.toISOString().slice(0, 7)   // always UTC → '2026-05'
+    const label = new Intl.DateTimeFormat('default', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d)
     return { val, label }
   }), [])
   const [currentMonth, setCurrentMonth] = useState(monthOptions[0].val)

@@ -27,7 +27,10 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
     let cancelled = false
     const load = async () => {
       setLoading(true)
-      const m      = month || new Date().toISOString().slice(0, 7)
+      // Use UTC month to match DB storage — toISOString() on a local date
+      // shifts IST users back one month (May 1 IST = April 30 UTC)
+      const now = new Date()
+      const m   = month || `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
       const url    = `/api/metrics?clientId=${clientId}&month=${m}&noCache=1${campaignId ? `&campaignId=${campaignId}` : ''}`
       const visUrl = `/api/analytics/asset-stats?clientId=${clientId}&month=${m}&channel=${channel}`
 
