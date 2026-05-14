@@ -44,6 +44,11 @@ export async function GET(request: NextRequest) {
 
     const sb = getSupabaseAdmin()
 
+    // Compute next month boundary once — shared by geo RPC and budget filter
+    const nm = new Date(month + '-01')
+    nm.setMonth(nm.getMonth() + 1)
+    const nextMonthStr = nm.toISOString().slice(0, 10)
+
     // ── 1. Partner stats — pre-aggregated, reads ~10 rows not 100K events ──
     //    Populated by trigger on events table (see supabase-stats-setup.sql)
     let statsQuery = sb
@@ -51,8 +56,9 @@ export async function GET(request: NextRequest) {
       .select('partner_id, partner_type, campaign_id, clicks, sales, code_sales, cookie_sales, revenue, commission')
       .eq('client_id', clientId)
       .eq('month', month)
+    // When campaignId is set: filter to that campaign only
+    // When no campaignId: fetch ALL rows for the month, aggregate across campaigns in JS below
     if (campaignId) statsQuery = statsQuery.eq('campaign_id', campaignId)
-    else            statsQuery = statsQuery.is('campaign_id', null)
 
     // ── 2. Partner metadata (tiny tables — always fast) ────────────────────
     let infQuery = sb.from('influencers')
@@ -76,11 +82,11 @@ export async function GET(request: NextRequest) {
       .eq('client_id', clientId).eq('status', 'sent')
     if (campaignId) waQuery = waQuery.eq('campaign_id', campaignId)
 
-    // ── 4. Geo — GROUP BY server-side via RPC (returns ~20 rows, not 100K) ─
-    const geoQuery = sb.rpc('get_geo_stats', {
+    // ── 4. Geo — GROUP BY server-side via RPC (returns ≤500 distinct points, not raw events) ─
+    const geoQuery = sb.rpc('get_click_geo_monthly', {
       p_client_id:   clientId,
-      p_month:       month,
-      p_campaign_id: campaignId || null,
+      p_month_start: `${month}-01`,
+      p_month_end:   nextMonthStr,
     })
 
     // Fire all queries in parallel
@@ -96,11 +102,8 @@ export async function GET(request: NextRequest) {
     const geoPoints    = (geoRes.data || []) as { city: string; country: string; lat: number; lon: number; clicks: number }[]
 
     // ── 5. Budget — still using creation-date filter (existing behaviour) ──
-    const nm = new Date(month + '-01')
-    nm.setMonth(nm.getMonth() + 1)
-    const nms = nm.toISOString().slice(0, 10)
-    const infFees  = influencers .filter(i => i.created_at >= `${month}-01` && i.created_at < nms).reduce((s, i) => s + (i.fee  || 0), 0)
-    const pubCosts = publications.filter(p => p.created_at >= `${month}-01` && p.created_at < nms).reduce((s, p) => s + (p.cost || 0), 0)
+    const infFees  = influencers .filter((i: any) => i.created_at >= `${month}-01` && i.created_at < nextMonthStr).reduce((s: number, i: any) => s + (i.fee  || 0), 0)
+    const pubCosts = publications.filter((p: any) => p.created_at >= `${month}-01` && p.created_at < nextMonthStr).reduce((s: number, p: any) => s + (p.cost || 0), 0)
     const totalBudget = infFees + pubCosts
 
     // ── 6. Build lookup maps from metadata ──────────────────────────────────
