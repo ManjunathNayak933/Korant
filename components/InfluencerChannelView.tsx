@@ -73,7 +73,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
 
   const filtered = selectedCampaign ? influencers.filter(i => i.campaign_id === selectedCampaign) : influencers
   const sorted = [...filtered].sort((a, b) => {
-    const ma = metrics[a.id] || {}, mb = metrics[b.id] || {}
+    const ma = (metrics[a.id] || {}) as InfluencerMetrics, mb = (metrics[b.id] || {}) as InfluencerMetrics
     if (sort === 'clicks')  return (mb.clicks || 0) - (ma.clicks || 0)
     if (sort === 'sales')   return (mb.totalSales || 0) - (ma.totalSales || 0)
     if (sort === 'revenue') return (mb.revenueAttributed || 0) - (ma.revenueAttributed || 0)
@@ -122,7 +122,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 12 }}>
           {sorted.map(inf => {
-            const m = metrics[inf.id] || {}
+            const m = (metrics[inf.id] || {}) as InfluencerMetrics
             const v = visitorMap[inf.id]
             return (
               <div key={inf.id} style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 16, opacity: inf.is_active ? 1 : 0.45 }}>
@@ -196,7 +196,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
       {statsModal && (
         <Modal title={`${statsModal.name} — Full stats`} onClose={() => setStatsModal(null)}>
           {(() => {
-            const m = metrics[statsModal.id] || {}
+            const m = (metrics[statsModal.id] || {}) as InfluencerMetrics
             const v = visitorMap[statsModal.id]
             return (
               <div>
