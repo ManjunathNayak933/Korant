@@ -7,7 +7,18 @@ import ChannelStatsBar from './ChannelStatsBar'
 import AssetInsights, { useAssetData } from './AssetInsights'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
-interface InfluencerMetrics { clicks: number; totalSales: number; conversionRate: number; revenueAttributed: number; codeRedemptions: number; avgCostPerClick: number }
+interface InfluencerMetrics {
+  clicks: number
+  totalSales: number
+  conversionRate: number
+  revenueAttributed: number
+  codeRedemptions: number
+  cookieSales: number
+  avgCostPerClick: number
+  topCity?: string | null
+  topReferrer?: string | null
+  deviceBreakdown?: { mobile: number; desktop: number; tablet: number }
+}
 interface VisitorStats { unique: number; returned: number; shared: number; returnRate: number; sharedRate: number }
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
 

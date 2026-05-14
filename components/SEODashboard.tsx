@@ -83,7 +83,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {filtered.map(pub => {
-            const st = eventMap[pub.id] || { clicks: 0, sales: 0, revenue: 0 }
+            const st = (eventMap[pub.id] || { clicks: 0, sales: 0, revenue: 0, codeRedemptions: 0 }) as PubStats
             const v  = visitorMap[pub.id]
             const cpc  = st.clicks > 0 && pub.cost > 0 ? pub.cost / st.clicks : null
             const conv = st.clicks > 0 ? (st.sales / st.clicks * 100) : 0
@@ -148,7 +148,7 @@ export default function SEODashboard({ clientId, campaigns, baseUrl, month, onCa
 
       {/* Full Stats Modal */}
       {statsModal && (() => {
-        const st = eventMap[statsModal.id] || { clicks: 0, sales: 0, revenue: 0 }
+        const st = (eventMap[statsModal.id] || { clicks: 0, sales: 0, revenue: 0, codeRedemptions: 0 }) as PubStats
         const v  = visitorMap[statsModal.id]
         const cpc  = st.clicks > 0 && statsModal.cost > 0 ? statsModal.cost / st.clicks : null
         const conv = st.clicks > 0 ? (st.sales / st.clicks * 100) : 0

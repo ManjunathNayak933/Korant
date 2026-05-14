@@ -3,6 +3,11 @@ import { useEffect, useState } from 'react'
 import MiniBarChart from './MiniBarChart'
 import MiniLineChart from './MiniLineChart'
 
+interface ChannelData {
+  clicks: number; sales: number; revenue: number; budget: number
+  codeRedemptions?: number; avgCostPerClick?: number
+}
+
 interface Props {
   clientId: string
   channel: 'influencer' | 'seo' | 'affiliate'
@@ -60,7 +65,7 @@ export default function ChannelStatsBar({ clientId, channel, campaignId, month }
     )
   }
 
-  const c          = stats?.channels?.[channel] || {}
+  const c          = (stats?.channels?.[channel] || {}) as ChannelData
   const allClicks  = c.clicks  || 0
   const allSales   = c.sales   || 0
   const allRevenue = c.revenue || 0

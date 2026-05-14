@@ -105,8 +105,8 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
   const ambassadors         = affiliates.filter(a => a.source === 'public_signup')
   const filteredRegular     = selectedCampaign ? regularAffiliates.filter(a => a.campaign_id === selectedCampaign) : regularAffiliates
   const sortedRegular       = [...filteredRegular].sort((a, b) => {
-    const sa = affStats[a.id] || { clicks:0, sales:0, revenue:0, commission:0 }
-    const sb = affStats[b.id] || { clicks:0, sales:0, revenue:0, commission:0 }
+    const sa = (affStats[a.id] || { clicks:0, sales:0, revenue:0, commission:0 }) as AffStats
+    const sb = (affStats[b.id] || { clicks:0, sales:0, revenue:0, commission:0 }) as AffStats
     if (sort === 'clicks')     return sb.clicks     - sa.clicks
     if (sort === 'sales')      return sb.sales      - sa.sales
     if (sort === 'revenue')    return sb.revenue    - sa.revenue
@@ -172,7 +172,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 12 }}>
                   {sortedRegular.map(aff => {
-                    const st = affStats[aff.id] || { clicks:0, sales:0, revenue:0, commission:0 }
+                    const st = (affStats[aff.id] || { clicks:0, sales:0, revenue:0, commission:0 }) as AffStats
                     const v  = visitorMap[aff.id]
                     return (
                       <div key={aff.id} style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 16, opacity: aff.is_active ? 1 : 0.5 }}>
@@ -339,7 +339,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
 
       {/* ── FULL STATS MODAL ── */}
       {statsModal && (() => {
-        const st = affStats[statsModal.id] || { clicks:0, sales:0, revenue:0, commission:0 }
+        const st = (affStats[statsModal.id] || { clicks:0, sales:0, revenue:0, commission:0 }) as AffStats
         const v  = visitorMap[statsModal.id]
         const convRate = st.clicks > 0 ? (st.sales / st.clicks * 100).toFixed(1) : '0'
         return (
