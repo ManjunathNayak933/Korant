@@ -147,9 +147,9 @@ export default function DashboardPage() {
     </div>
   )
 
-  const s        = metrics?.summary  || {}
-  const channels = metrics?.channels || {}
-  const wa       = channels.whatsapp || {}
+  const s        = (metrics?.summary  || {}) as MetricsSummary
+  const channels = (metrics?.channels || {}) as Record<string, ChannelData>
+  const wa       = (channels.whatsapp || {}) as ChannelData
   const currentMonthLabel = monthOptions.find(m => m.val === currentMonth)?.label || currentMonth
 
   const clickBars = [
@@ -239,7 +239,7 @@ export default function DashboardPage() {
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {currentMonthLabel}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
                   {[['Influencer','influencer','var(--amber)'],['SEO','seo','var(--blue)'],['Affiliate','affiliate','var(--green)'],['WhatsApp','whatsapp','#25d366']].map(([ch,key,color]) => {
-                    const c = channels[key] || {}
+                    const c = (channels[key] || {}) as ChannelData
                     return (
                       <div key={ch} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 8, padding: 14 }}>
                         <div style={{ fontSize: 11, color, marginBottom: 10, fontWeight: 500 }}>{ch}</div>
