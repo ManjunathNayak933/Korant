@@ -37,7 +37,7 @@ interface MetricsData {
   geoPoints: any[]
   eventsTruncated?: boolean
 }
-interface FeedData { items: any[]; alerts: { message: string }[] }
+interface FeedData { items: any[]; alerts: { message: string; type: string }[] }
 
 const TABS = [
   { id: 'overview',    label: 'Overview',       icon: '▦' },
