@@ -291,10 +291,55 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
 
               {/* Custom instructions */}
               {trackingPlatform==='custom'&&(
-                <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:12 }}>
-                  Paste the main script just before <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> in your site's master layout file — the one file that wraps every page.<br/><br/>
-                  <strong style={{ color:'var(--text-secondary)' }}>Using a tag manager?</strong><br/>
-                  In Google Tag Manager, Segment, or similar — add a <em>Custom HTML</em> tag, paste the script, and set it to fire on <strong>All Pages</strong>.
+                <div>
+                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:10 }}>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 1 — All pages (visit tracking)</strong>
+                    Paste the main script below just before <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> in your master layout file — the one file that wraps every page.<br/>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Using a tag manager? Add a Custom HTML tag firing on All Pages.</span>
+                  </div>
+                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:8 }}>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 2 — Conversion tracking (no checkout needed)</strong>
+                    Call <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>mkConvert()</code> whenever your meaningful action happens — form submit, sign-up, demo request, trial activation. This replaces the order webhook entirely.<br/>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Optionally pass a lead value in ₹ (e.g. your CRM value per lead). Leave 0 if unknown.</span>
+                  </div>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 12px', marginBottom:12 }}>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.6 }}>{`<!-- Conversion helper — paste once anywhere on your site -->
+<script>
+function mkConvert(leadValue) {
+  function gc(n){var m=document.cookie.match('(^|;)\\s*'+n+'=([^;]+)');return m?m[2]:null}
+  fetch('/api/beacon', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      visitor_id:   gc('kv_id'),
+      partner_slug: gc('kv_partner'),
+      page:         window.location.pathname,
+      event:        'lead',
+      order_value:  leadValue || 0
+    })
+  }).catch(function(){});
+}
+</script>
+
+<!-- Then call it wherever your conversion happens: -->
+
+<!-- Form submit button -->
+<button onclick="mkConvert(0)">Submit</button>
+
+<!-- After successful API call (e.g. sign-up) -->
+yourSignupApi().then(function(r) {
+  if (r.ok) mkConvert(2500); // optional: ₹2500 CRM value per lead
+});
+
+<!-- Demo / contact click -->
+<a href="/demo" onclick="mkConvert(5000)">Book a demo</a>`}</pre>
+                    <button onClick={()=>navigator.clipboard.writeText(`<!-- Conversion helper -->\n<script>\nfunction mkConvert(leadValue) {\n  function gc(n){var m=document.cookie.match('(^|;)\\\\s*'+n+'=([^;]+)');return m?m[2]:null}\n  fetch('/api/beacon', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      visitor_id:   gc('kv_id'),\n      partner_slug: gc('kv_partner'),\n      page:         window.location.pathname,\n      event:        'lead',\n      order_value:  leadValue || 0\n    })\n  }).catch(function(){});\n}\n</script>`)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
+                  </div>
+                  <div style={{ padding:'10px 14px', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:8, fontSize:11, color:'var(--text-dim)', lineHeight:1.7 }}>
+                    <strong style={{ color:'var(--text-secondary)' }}>What you can track without a checkout:</strong><br/>
+                    ✓ Clicks per partner &nbsp;·&nbsp; ✓ Unique / Returned / Shared visitors &nbsp;·&nbsp; ✓ Conversion rate (leads ÷ clicks) &nbsp;·&nbsp; ✓ Lead value if you pass one<br/>
+                    ✗ Order-level detail &nbsp;·&nbsp; ✗ Discount code redemptions
+                  </div>
                 </div>
               )}
 
