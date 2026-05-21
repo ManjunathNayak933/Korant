@@ -238,11 +238,31 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
               </p>
 
               {/* Platform tabs */}
-              {(() => {
-                const plat = trackingPlatform
-                const setPlat = setTrackingPlatform
+              <div style={{ display:'flex', gap:0, borderBottom:'0.5px solid var(--border2)', marginBottom:14 }}>
+                {(['shopify','woo','custom'] as const).map(p => (
+                  <button key={p} onClick={()=>setTrackingPlatform(p)} style={{ padding:'6px 14px', fontSize:12, border:'none', background:'transparent', color:trackingPlatform===p?'var(--amber)':'var(--text-dim)', borderBottom:`2px solid ${trackingPlatform===p?'var(--amber)':'transparent'}`, cursor:'pointer', fontFamily:'var(--font-sans)' }}>
+                    {p==='shopify'?'Shopify':p==='woo'?'WooCommerce':'Custom / Other'}
+                  </button>
+                ))}
+              </div>
 
-                const shopifyOrderSnippet = `{% comment %} Add to order-status.liquid or thank_you.liquid {% endcomment %}
+              {/* Shopify instructions */}
+              {trackingPlatform==='shopify'&&(
+                <div>
+                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:10 }}>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 1 — All pages (visitor tracking)</strong>
+                    Go to <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Admin → Online Store → Themes → ••• → Edit code</code><br/>
+                    Open <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Layout / theme.liquid</code><br/>
+                    Find <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> near the very bottom. Paste the main script just above it.<br/>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Google Analytics goes in {'<head>'} — our script goes before {'</body>'}. Same file, different spots, no conflict.</span>
+                  </div>
+                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:8 }}>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 2 — Order confirmation (sale tracking)</strong>
+                    In the same Edit code panel, open <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>order-status.liquid</code> and paste this at the bottom.<br/>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}><code style={{ background:'var(--surface2)', padding:'1px 4px', borderRadius:3 }}>first_time_accessed</code> is a Shopify variable that prevents double-counting when the customer refreshes the thank-you page.</span>
+                  </div>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 12px', marginBottom:12 }}>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{`{% comment %} order-status.liquid — add at the bottom {% endcomment %}
 {% if first_time_accessed %}
 <script>
   fetch('/api/beacon',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -252,69 +272,36 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
       page:'/checkout/complete', event:'purchase'
     })}).catch(function(){});
 </script>
-{% endif %}`
+{% endif %}`}</pre>
+                    <button onClick={()=>navigator.clipboard.writeText(`{% comment %} order-status.liquid {% endcomment %}\n{% if first_time_accessed %}\n<script>\n  fetch('/api/beacon',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({visitor_id:(document.cookie.match('(^|;)\\s*kv_id=([^;]+)')||[])[2],partner_slug:(document.cookie.match('(^|;)\\s*kv_partner=([^;]+)')||[])[2],page:'/checkout/complete',event:'purchase'})}).catch(function(){});\n</script>\n{% endif %}`)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
+                  </div>
+                </div>
+              )}
 
-                const platforms: Record<string, { label: string; instructions: JSX.Element }> = {
-                  shopify: {
-                    label: 'Shopify',
-                    instructions: (
-                      <div>
-                        <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.8, marginBottom:10 }}>
-                          <strong style={{ color:'var(--text-secondary)' }}>Step 1 — All pages (visitor tracking)</strong><br/>
-                          Go to: <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>Admin → Online Store → Themes → ••• → Edit code</span><br/>
-                          Open <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>Layout / theme.liquid</span><br/>
-                          Find <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>{'</body>'}</span> near the very bottom. Paste the main script just above it.<br/>
-                          <span style={{ color:'var(--text-dim)', fontSize:11 }}>Google Analytics is in {'<head>'} — our script is before {'</body>'}. Same file, different spots, no conflict.</span>
-                        </div>
-                        <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.8, marginBottom:10 }}>
-                          <strong style={{ color:'var(--text-secondary)' }}>Step 2 — Order confirmation (sale tracking)</strong><br/>
-                          In the same Edit code panel, open <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>order-status.liquid</span> (or <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>thank_you.liquid</span>).<br/>
-                          Paste this at the bottom. <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>first_time_accessed</span> prevents double-counting on page refresh.
-                        </div>
-                        <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 12px', marginBottom:10 }}>
-                          <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{shopifyOrderSnippet}</pre>
-                          <button onClick={()=>navigator.clipboard.writeText(shopifyOrderSnippet)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
-                        </div>
-                      </div>
-                    )
-                  },
-                  woo: {
-                    label: 'WooCommerce',
-                    instructions: (
-                      <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.8 }}>
-                        <strong style={{ color:'var(--text-secondary)' }}>All pages</strong><br/>
-                        Go to: <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>Appearance → Theme Editor → footer.php</span><br/>
-                        Paste the main script just before <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>{'</body>'}</span>.<br/><br/>
-                        <strong style={{ color:'var(--text-secondary)' }}>Or use a plugin</strong><br/>
-                        Install <em>Insert Headers and Footers</em> plugin → paste in the Footer section. Easier and doesn't require editing theme files.
-                      </div>
-                    )
-                  },
-                  custom: {
-                    label: 'Custom / Other',
-                    instructions: (
-                      <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.8 }}>
-                        Paste the main script just before <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--surface2)', padding:'1px 5px', borderRadius:3 }}>{'</body>'}</span> in your site's master template — the one file that wraps every page.<br/><br/>
-                        If you use a tag manager (GTM, Segment, etc.), paste the script content inside a Custom HTML tag set to fire on All Pages.
-                      </div>
-                    )
-                  }
-                }
+              {/* WooCommerce instructions */}
+              {trackingPlatform==='woo'&&(
+                <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:12 }}>
+                  <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Option A — Edit theme file</strong>
+                  Go to <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Appearance → Theme Editor → footer.php</code><br/>
+                  Paste the main script just before <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code>.<br/><br/>
+                  <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Option B — Plugin (easier, no code editing)</strong>
+                  Install the <em>Insert Headers and Footers</em> plugin → paste the script in the <strong>Footer</strong> section. Saves and applies to all pages automatically.
+                </div>
+              )}
 
-                return (
-                  <>
-                    <div style={{ display:'flex', gap:0, borderBottom:'0.5px solid var(--border2)', marginBottom:14 }}>
-                      {Object.entries(platforms).map(([key, p]) => (
-                        <button key={key} onClick={()=>setPlat(key)} style={{ padding:'6px 14px', fontSize:12, border:'none', background:'transparent', color: plat===key ? 'var(--amber)' : 'var(--text-dim)', borderBottom: `2px solid ${plat===key ? 'var(--amber)' : 'transparent'}`, cursor:'pointer', fontFamily:'var(--font-sans)' }}>{p.label}</button>
-                      ))}
-                    </div>
-                    {platforms[plat].instructions}
-                  </>
-                )
-              })()}
+              {/* Custom instructions */}
+              {trackingPlatform==='custom'&&(
+                <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:12 }}>
+                  Paste the main script just before <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> in your site's master layout file — the one file that wraps every page.<br/><br/>
+                  <strong style={{ color:'var(--text-secondary)' }}>Using a tag manager?</strong><br/>
+                  In Google Tag Manager, Segment, or similar — add a <em>Custom HTML</em> tag, paste the script, and set it to fire on <strong>All Pages</strong>.
+                </div>
+              )}
 
-              {/* Main snippet */}
-              <div style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)', margin:'12px 0 6px' }}>Main tracking script (all pages)</div>
+              {/* Main snippet — same for all platforms */}
+              <div style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)', marginBottom:6 }}>
+                Main tracking script — paste in {trackingPlatform==='shopify'?'theme.liquid before </body>':trackingPlatform==='woo'?'footer.php before </body>':'your master layout before </body>'}
+              </div>
               <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
                 <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-all', lineHeight:1.5, maxHeight:140, overflow:'auto' }}>{snippet}</pre>
                 <button onClick={()=>{navigator.clipboard.writeText(snippet);setCopied(true);setTimeout(()=>setCopied(false),2000)}}
