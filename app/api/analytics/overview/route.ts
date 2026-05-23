@@ -12,6 +12,7 @@ export async function GET(request: NextRequest) {
     const month    = searchParams.get('month') || new Date().toISOString().slice(0, 7)
 
     if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+    if (role === 'client' && clientId !== userId) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const sb = getSupabaseAdmin()
     const monthStart = `${month}-01`
