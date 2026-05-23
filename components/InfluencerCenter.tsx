@@ -102,18 +102,24 @@ export default function InfluencerCenter() {
         </div>
 
         <Label>Channel</Label>
-        <Select value={platform} onChange={e => setPlatform(e.target.value)}>
-          <option value=''>All Channels</option>
-          {PLATFORMS.map(p => (
-            <option key={p} value={p}>{platformIcon[p]} {p.charAt(0).toUpperCase()+p.slice(1)}</option>
-          ))}
-        </Select>
+        <Select
+          value={platform}
+          onChange={e => setPlatform(e.target.value)}
+          options={[
+            { value: '', label: 'All Channels' },
+            ...PLATFORMS.map(p => ({ value: p, label: `${platformIcon[p]} ${p.charAt(0).toUpperCase()+p.slice(1)}` }))
+          ]}
+        />
 
         <Label>Category</Label>
-        <Select value={category} onChange={e => setCategory(e.target.value)}>
-          <option value=''>All Categories</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </Select>
+        <Select
+          value={category}
+          onChange={e => setCategory(e.target.value)}
+          options={[
+            { value: '', label: 'All Categories' },
+            ...categories.map(c => ({ value: c, label: c }))
+          ]}
+        />
 
         <Label>Min Revenue (₹)</Label>
         <Input
@@ -128,11 +134,15 @@ export default function InfluencerCenter() {
         />
 
         <Label>Sort by</Label>
-        <Select value={sortBy} onChange={e => setSortBy(e.target.value)}>
-          <option value='avg_clicks_per_content'>Avg Clicks</option>
-          <option value='total_revenue'>Revenue</option>
-          <option value='brand_count'>Popularity</option>
-        </Select>
+        <Select
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value)}
+          options={[
+            { value: 'avg_clicks_per_content', label: 'Avg Clicks' },
+            { value: 'total_revenue',          label: 'Revenue' },
+            { value: 'brand_count',            label: 'Popularity' },
+          ]}
+        />
 
         {hasFilters && (
           <button onClick={clearFilters} style={{
@@ -378,26 +388,73 @@ function Label({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Select({ children, value, onChange }: {
-  children: React.ReactNode
+function Select({ children, value, onChange, options }: {
+  children?: React.ReactNode
   value: string
   onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
+  options: { value: string; label: string }[]
 }) {
+  const [open, setOpen] = useState(false)
+  const selected = options.find(o => o.value === value)
+
   return (
-    <select
-      value={value} onChange={onChange}
-      style={{
-        width:'100%', padding:'7px 8px',
-        borderRadius:'var(--border-radius-sm)',
-        border:'0.5px solid var(--color-border-secondary)',
-        background:'var(--color-background-primary)',
-        color:'var(--color-text-primary)',
-        fontSize:13, cursor:'pointer',
-        appearance:'auto',
-      }}
-    >
-      {children}
-    </select>
+    <div style={{ position: 'relative' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', padding: '7px 30px 7px 8px', boxSizing: 'border-box',
+          borderRadius: 'var(--border-radius-sm)',
+          border: '0.5px solid var(--color-border-secondary)',
+          background: 'var(--color-background-primary)',
+          color: 'var(--color-text-primary)',
+          fontSize: 13, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          userSelect: 'none',
+        }}
+      >
+        <span>{selected?.label || options[0]?.label}</span>
+        <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 6 }}>▼</span>
+      </div>
+
+      {open && (
+        <>
+          {/* click outside to close */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
+          />
+          <div style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
+            background: 'var(--color-background-primary)',
+            border: '0.5px solid var(--color-border-secondary)',
+            borderRadius: 'var(--border-radius-sm)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+            zIndex: 100, overflow: 'hidden',
+          }}>
+            {options.map(o => (
+              <div
+                key={o.value}
+                onClick={() => {
+                  onChange({ target: { value: o.value } } as any)
+                  setOpen(false)
+                }}
+                style={{
+                  padding: '8px 10px', fontSize: 13, cursor: 'pointer',
+                  color: 'var(--color-text-primary)',
+                  background: o.value === value
+                    ? 'var(--color-background-secondary)'
+                    : 'transparent',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-background-secondary)')}
+                onMouseLeave={e => (e.currentTarget.style.background = o.value === value ? 'var(--color-background-secondary)' : 'transparent')}
+              >
+                {o.label}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
