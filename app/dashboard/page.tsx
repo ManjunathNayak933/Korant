@@ -14,6 +14,7 @@ import SetupModal from '@/components/SetupModal'
 import WhatsAppDashboard from '@/components/WhatsAppDashboard'
 import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
+import InfluencerCenter from '@/components/InfluencerCenter'
 
 interface UserProfile {
   id: string; name: string; email: string; status: string; role: string
@@ -49,6 +50,7 @@ const TABS = [
   { id: 'analytics',   label: 'Analytics',      icon: '📊' },
   { id: 'meta',        label: 'Meta Ads',       icon: '▦',  soon: true },
   { id: 'marketplace', label: 'Marketplace',    icon: '🛒',  soon: true },
+  { id: 'influencer-center', label: 'Influencer Center', icon: '⭐' },
   { id: 'requests',    label: 'Requests',       icon: '🔔' },
 ]
 
@@ -358,6 +360,12 @@ export default function DashboardPage() {
               <p style={{ fontSize:13, color:'var(--text-muted)', marginBottom:20, lineHeight:1.7 }}>Connect your GSC property to see keyword rankings alongside attribution data.</p>
               <a href="/api/integrations/gsc" style={{ border:'0.5px solid var(--blue)', color:'var(--blue)', borderRadius:7, padding:'8px 18px', fontSize:13, textDecoration:'none', display:'inline-block' }}>Connect Google Search Console</a>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'influencer-center' && (
+          <div style={{ padding: '24px 0' }}>
+            <InfluencerCenter />
           </div>
         )}
 
