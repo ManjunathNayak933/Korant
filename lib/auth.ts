@@ -103,13 +103,24 @@ export async function loginUser(
   password: string
 ): Promise<{ token: string; role: UserRole; redirectPath: string; name: string } | null> {
 
-  // 1. Admin — plain compare (no hash needed for admin)
-  if (
-    email === process.env.ADMIN_EMAIL &&
-    password === process.env.ADMIN_PASSWORD
-  ) {
-    const token = await signToken({ sub: 'admin', role: 'admin', email, name: 'Admin' })
-    return { token, role: 'admin', redirectPath: '/admin', name: 'Admin' }
+  // 1. Admin — compare against hashed password stored in ADMIN_PASSWORD_HASH env var.
+  // To generate the hash, run once: POST /api/setup/verify with your chosen password,
+  // or use the hashPassword() function from a one-off script.
+  // Falls back to ADMIN_PASSWORD plain-text ONLY during initial setup (no hash set yet).
+  if (email === process.env.ADMIN_EMAIL) {
+    const adminHash = process.env.ADMIN_PASSWORD_HASH
+    let adminMatch = false
+    if (adminHash) {
+      adminMatch = await verifyPasswordCrypto(password, adminHash)
+    } else if (process.env.ADMIN_PASSWORD) {
+      // Legacy fallback — set ADMIN_PASSWORD_HASH as soon as possible and remove ADMIN_PASSWORD
+      adminMatch = password === process.env.ADMIN_PASSWORD
+    }
+    if (adminMatch) {
+      const token = await signToken({ sub: 'admin', role: 'admin', email, name: 'Admin' })
+      return { token, role: 'admin', redirectPath: '/admin', name: 'Admin' }
+    }
+    return null
   }
 
   const sb = getSupabaseAdmin()
