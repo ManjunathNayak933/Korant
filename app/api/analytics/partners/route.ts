@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const channel    = searchParams.get('channel') || 'influencer' // influencer | seo | affiliate
 
     if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+    if (role === 'client' && clientId !== userId) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const sb = getSupabaseAdmin()
     const monthStart = `${month}-01`
