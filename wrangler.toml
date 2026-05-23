@@ -2,3 +2,9 @@ name = "korant"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".vercel/output/static"
+
+[[kv_namespaces]]
+binding = "METRICS_CACHE"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+# To create: wrangler kv:namespace create METRICS_CACHE
+# Then paste the returned id above
