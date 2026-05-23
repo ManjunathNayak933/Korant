@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 
 interface Profile {
   handle: string
@@ -388,21 +388,40 @@ function Label({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Select({ children, value, onChange, options }: {
-  children?: React.ReactNode
+function Select({ value, onChange, options }: {
   value: string
   onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
   options: { value: string; label: string }[]
 }) {
   const [open, setOpen] = useState(false)
+  const ref = React.useRef<HTMLDivElement>(null)
   const selected = options.find(o => o.value === value)
 
+  // Read the actual computed background from the DOM so dark mode works correctly
+  const [bg, setBg]     = useState('#1a1a1a')
+  const [bgHover, setBgHover] = useState('#2a2a2a')
+  const [textColor, setTextColor] = useState('#ffffff')
+  const [borderColor, setBorderColor] = useState('#444')
+
+  React.useEffect(() => {
+    const root = document.documentElement
+    const style = getComputedStyle(root)
+    const rawBg     = style.getPropertyValue('--color-background-primary').trim()
+    const rawBgSec  = style.getPropertyValue('--color-background-secondary').trim()
+    const rawText   = style.getPropertyValue('--color-text-primary').trim()
+    const rawBorder = style.getPropertyValue('--color-border-secondary').trim()
+    if (rawBg)     setBg(rawBg)
+    if (rawBgSec)  setBgHover(rawBgSec)
+    if (rawText)   setTextColor(rawText)
+    if (rawBorder) setBorderColor(rawBorder)
+  }, [])
+
   return (
-    <div style={{ position: 'relative' }}>
+    <div ref={ref} style={{ position: 'relative' }}>
       <div
         onClick={() => setOpen(o => !o)}
         style={{
-          width: '100%', padding: '7px 30px 7px 8px', boxSizing: 'border-box',
+          width: '100%', padding: '7px 10px', boxSizing: 'border-box',
           borderRadius: 'var(--border-radius-sm)',
           border: '0.5px solid var(--color-border-secondary)',
           background: 'var(--color-background-primary)',
@@ -418,35 +437,26 @@ function Select({ children, value, onChange, options }: {
 
       {open && (
         <>
-          {/* click outside to close */}
-          <div
-            onClick={() => setOpen(false)}
-            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-          />
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />
           <div style={{
             position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
-            background: 'var(--color-background-primary)',
-            border: '0.5px solid var(--color-border-secondary)',
+            backgroundColor: bg,
+            border: `1px solid ${borderColor}`,
             borderRadius: 'var(--border-radius-sm)',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
             zIndex: 100, overflow: 'hidden',
           }}>
             {options.map(o => (
               <div
                 key={o.value}
-                onClick={() => {
-                  onChange({ target: { value: o.value } } as any)
-                  setOpen(false)
-                }}
+                onClick={() => { onChange({ target: { value: o.value } } as any); setOpen(false) }}
                 style={{
                   padding: '8px 10px', fontSize: 13, cursor: 'pointer',
-                  color: 'var(--color-text-primary)',
-                  background: o.value === value
-                    ? 'var(--color-background-secondary)'
-                    : 'transparent',
+                  color: textColor,
+                  backgroundColor: o.value === value ? bgHover : bg,
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-background-secondary)')}
-                onMouseLeave={e => (e.currentTarget.style.background = o.value === value ? 'var(--color-background-secondary)' : 'transparent')}
+                onMouseEnter={e => (e.currentTarget.style.backgroundColor = bgHover)}
+                onMouseLeave={e => (e.currentTarget.style.backgroundColor = o.value === value ? bgHover : bg)}
               >
                 {o.label}
               </div>
