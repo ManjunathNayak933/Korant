@@ -5,6 +5,7 @@ import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
 import ChannelStatsBar from './ChannelStatsBar'
 import AssetInsights, { useAssetData } from './AssetInsights'
+import InfluencerSearch from './InfluencerSearch'
 
 interface Influencer { id: string; name: string; handle: string; social_platform: string; fee: number; redirect_slug: string; discount_code?: string; is_active: boolean; campaign_id?: string }
 interface InfluencerMetrics {
@@ -106,6 +107,9 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
           <button onClick={() => setShowAdd(true)} style={{ border: '0.5px solid var(--amber)', color: 'var(--amber)', background: 'transparent', borderRadius: 7, padding: '6px 13px', fontSize: 12, cursor: 'pointer' }}>+ Influencer</button>
         </div>
       </div>
+
+      {/* Audience overlap search — check if a new influencer's audience overlaps with past collaborators */}
+      <InfluencerSearch clientId={clientId} />
 
       {loading ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: 12 }}>
