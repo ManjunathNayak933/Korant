@@ -2,9 +2,9 @@
 // KV reads: free up to 100k/day. Writes: ~$0.50 per million — negligible.
 // This replaces the old in-memory Map which was useless on edge (each worker has its own memory).
 
-function getKV(): KVNamespace | null {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getKV(): any | null {
   try {
-    // @ts-ignore — Cloudflare provides this as a global binding
     return (globalThis as any).METRICS_CACHE ?? null
   } catch {
     return null
