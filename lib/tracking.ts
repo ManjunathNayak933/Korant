@@ -10,22 +10,11 @@ export function generateSlug(prefix: string = ''): string {
 }
 
 export async function ensureUniqueSlug(base: string): Promise<string> {
-  const sb = getSupabaseAdmin()
-  let slug = base
-  let attempts = 0
-  while (attempts < 10) {
-    const clean = slug.toLowerCase().replace(/[^a-z0-9-]/g, '')
-    // Check all slug tables
-    const [{ data: i }, { data: p }, { data: a }] = await Promise.all([
-      sb.from('influencers').select('id').eq('redirect_slug', clean).single(),
-      sb.from('publications').select('id').eq('redirect_slug', clean).single(),
-      sb.from('affiliates').select('id').eq('redirect_slug', clean).single(),
-    ])
-    if (!i && !p && !a) return clean
-    slug = `${base}-${Math.random().toString(36).slice(2, 5)}`
-    attempts++
-  }
-  return `${base}-${Date.now().toString(36)}`
+  // Clean the base
+  const clean = base.toLowerCase().replace(/[^a-z0-9-]/g, '')
+  // Append a random 6-char suffix — collision probability is ~1 in 2 billion, no loop needed
+  const suffix = Math.random().toString(36).slice(2, 8)
+  return `${clean}-${suffix}`
 }
 
 export async function findEntityBySlug(slug: string) {
