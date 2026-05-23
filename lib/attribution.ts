@@ -135,6 +135,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
         .from('events')
         .select('id')
         .eq('affiliate_id', aff.id)
+        .eq('client_id', clientId)
         .eq('type', 'click')
         .gte('timestamp', windowStart)
         .order('timestamp', { ascending: false })
