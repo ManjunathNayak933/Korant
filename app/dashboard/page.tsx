@@ -48,7 +48,6 @@ const TABS = [
   { id: 'whatsapp',    label: 'WhatsApp',       icon: '💬' },
   { id: 'search',      label: 'Search Console', icon: '🔍' },
   { id: 'analytics',   label: 'Analytics',      icon: '📊' },
-  { id: 'meta',        label: 'Meta Ads',       icon: '▦',  soon: true },
   { id: 'marketplace', label: 'Marketplace',    icon: '🛒',  soon: true },
   { id: 'influencer-center', label: 'Influencer Center', icon: '⭐' },
   { id: 'requests',    label: 'Requests',       icon: '🔔' },
@@ -369,7 +368,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {(activeTab === 'meta' || activeTab === 'marketplace') && (
+        {activeTab === 'marketplace' && (
           <div style={{ padding:'60px 0', display:'flex', flexDirection:'column', alignItems:'center' }}>
             <div style={{ fontSize:28, marginBottom:12 }}>🚧</div>
             <div style={{ fontSize:15, fontWeight:500, color:'var(--text-primary)', marginBottom:6 }}>Coming soon</div>
