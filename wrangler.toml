@@ -5,6 +5,6 @@ pages_build_output_dir = ".vercel/output/static"
 
 [[kv_namespaces]]
 binding = "METRICS_CACHE"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "58fcc92a0626419e884d3b7ccac19d1e"
 # To create: wrangler kv:namespace create METRICS_CACHE
 # Then paste the returned id above
