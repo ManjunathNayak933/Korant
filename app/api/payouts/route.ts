@@ -36,7 +36,11 @@ export async function POST(request: NextRequest) {
 
     const sb = getSupabaseAdmin()
     const monthStart = `${month}-01`
-    const monthEnd = `${month}-31`
+    // Calculate the actual last day of the month (handles Feb, 30-day months, leap years)
+    const lastDay = new Date(month + '-01')
+    lastDay.setMonth(lastDay.getMonth() + 1)
+    lastDay.setDate(0)
+    const monthEnd = lastDay.toISOString().slice(0, 10)
 
     // Influencer payouts (fee-based)
     const { data: influencers } = await sb
