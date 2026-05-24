@@ -92,32 +92,34 @@ export default function InfluencerCenter() {
 
   const hasFilters = platform || category || minRevenue || minClicks || sortBy !== 'avg_clicks_per_content'
 
+  if (gateStatus === 'pro_required') return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+      <div style={{ fontSize:32 }}>🔒</div>
+      <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>Pro plan required</div>
+      <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>
+        Influencer Center is available on the Pro plan. Upgrade to unlock it along with Market View and unlimited access.
+      </div>
+      <a href='/settings?tab=billing' style={{ marginTop:4, padding:'9px 24px', background:'var(--color-brand)', color:'#fff', borderRadius:'var(--border-radius-md)', fontSize:13, fontWeight:500, textDecoration:'none' }}>
+        Upgrade to Pro →
+      </a>
+    </div>
+  )
+
+  if (gateStatus === 'insufficient_data') return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+      <div style={{ fontSize:32 }}>🌱</div>
+      <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>This gets better with scale.</div>
+      <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>Come back soon; the platform is growing.</div>
+    </div>
+  )
+
+  if (gateStatus === 'loading') return (
+    <div style={{ textAlign:'center', padding:'80px 0', color:'var(--color-text-tertiary)' }}>Loading…</div>
+  )
+
   return (
     <div style={{ display:'flex', gap:20, alignItems:'flex-start' }}>
 
-      {/* Gate screens */}
-      {gateStatus === 'pro_required' && (
-        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
-          <div style={{ fontSize:32 }}>🔒</div>
-          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>Pro plan required</div>
-          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>
-            Influencer Center is available on the Pro plan. Upgrade to unlock it along with Market View and unlimited access.
-          </div>
-          <a href='/settings?tab=billing' style={{ marginTop:4, padding:'9px 24px', background:'var(--color-brand)', color:'#fff', borderRadius:'var(--border-radius-md)', fontSize:13, fontWeight:500, textDecoration:'none' }}>
-            Upgrade to Pro →
-          </a>
-        </div>
-      )}
-
-      {gateStatus === 'insufficient_data' && (
-        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
-          <div style={{ fontSize:32 }}>🌱</div>
-          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>This gets better with scale.</div>
-          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>Come back soon; the platform is growing.</div>
-        </div>
-      )}
-
-      {gateStatus === 'ok' && <>
       {/* ── Left sidebar filters ── */}
       <div style={{
         width: 220, flexShrink: 0,
@@ -397,8 +399,6 @@ export default function InfluencerCenter() {
         </>
       )}
     </div>
-    </>
-    }
   )
 }
 
