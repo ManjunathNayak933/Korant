@@ -40,6 +40,7 @@ export default function MarketView() {
   const [dateRange, setDateRange]     = useState('30')
   const [buyerMode, setBuyerMode]     = useState(false)
   const [loading, setLoading]         = useState(false)
+  const [gateStatus, setGateStatus]   = useState<'loading'|'pro_required'|'insufficient_data'|'ok'>('ok')
   const [data, setData]               = useState<any>(null)
   const [empty, setEmpty]             = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
@@ -61,6 +62,15 @@ export default function MarketView() {
     debounceRef.current = setTimeout(() => fetchSuggestions(v, locationType), 250)
   }
 
+  // Check gate on mount
+  React.useEffect(() => {
+    fetch('/api/market-view').then(res => {
+      if (res.status === 403) setGateStatus('pro_required')
+      else if (res.status === 503) setGateStatus('insufficient_data')
+      else setGateStatus('ok')
+    })
+  }, [])
+
   const search = useCallback(async (loc: string) => {
     if (!loc) return
     setLocation(loc); setQuery(loc); setSuggestions([])
@@ -81,6 +91,29 @@ export default function MarketView() {
   return (
     <div style={{ paddingBottom: 40 }}>
 
+      {/* Gate screens */}
+      {gateStatus === 'pro_required' && (
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+          <div style={{ fontSize:32 }}>🔒</div>
+          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>Pro plan required</div>
+          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>
+            Market View is available on the Pro plan. Upgrade to unlock it along with Influencer Center and unlimited access.
+          </div>
+          <a href='/settings?tab=billing' style={{ marginTop:4, padding:'9px 24px', background:'var(--color-brand)', color:'#fff', borderRadius:'var(--border-radius-md)', fontSize:13, fontWeight:500, textDecoration:'none' }}>
+            Upgrade to Pro →
+          </a>
+        </div>
+      )}
+
+      {gateStatus === 'insufficient_data' && (
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+          <div style={{ fontSize:32 }}>🌱</div>
+          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>This gets better with scale.</div>
+          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>Come back soon; the platform is growing.</div>
+        </div>
+      )}
+
+      {gateStatus === 'ok' && <>
       {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, color: 'var(--color-text-primary)' }}>
@@ -306,6 +339,8 @@ export default function MarketView() {
         </div>
       )}
     </div>
+    </>
+    }
   )
 }
 
