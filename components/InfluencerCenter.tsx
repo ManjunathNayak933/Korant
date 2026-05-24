@@ -39,6 +39,7 @@ export default function InfluencerCenter() {
   const [profiles, setProfiles]     = useState<Profile[]>([])
   const [categories, setCategories] = useState<{value:string;label:string}[]>([])
   const [loading, setLoading]       = useState(true)
+  const [gateStatus, setGateStatus] = useState<'loading'|'pro_required'|'insufficient_data'|'ok'>('loading')
   const [page, setPage]             = useState(1)
 
   // Filters (live — apply on every change)
@@ -61,9 +62,12 @@ export default function InfluencerCenter() {
     if (minRevenue) p.set('minRevenue', minRevenue)
     if (minClicks)  p.set('minClicks', minClicks)
     const res  = await fetch('/api/influencer-center?'+p)
+    if (res.status === 403) { setGateStatus('pro_required'); setLoading(false); return }
+    if (res.status === 503) { setGateStatus('insufficient_data'); setLoading(false); return }
     const json = await res.json()
+    setGateStatus('ok')
     setProfiles(json.profiles || [])
-    setCategories(json.categories || [])  // [{value, label}]
+    setCategories(json.categories || [])
     setPage(pg)
     setLoading(false)
   }, [platform, category, minRevenue, minClicks, sortBy])
@@ -91,6 +95,29 @@ export default function InfluencerCenter() {
   return (
     <div style={{ display:'flex', gap:20, alignItems:'flex-start' }}>
 
+      {/* Gate screens */}
+      {gateStatus === 'pro_required' && (
+        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+          <div style={{ fontSize:32 }}>🔒</div>
+          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>Pro plan required</div>
+          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>
+            Influencer Center is available on the Pro plan. Upgrade to unlock it along with Market View and unlimited access.
+          </div>
+          <a href='/settings?tab=billing' style={{ marginTop:4, padding:'9px 24px', background:'var(--color-brand)', color:'#fff', borderRadius:'var(--border-radius-md)', fontSize:13, fontWeight:500, textDecoration:'none' }}>
+            Upgrade to Pro →
+          </a>
+        </div>
+      )}
+
+      {gateStatus === 'insufficient_data' && (
+        <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 40px', textAlign:'center', gap:12 }}>
+          <div style={{ fontSize:32 }}>🌱</div>
+          <div style={{ fontSize:16, fontWeight:500, color:'var(--color-text-primary)' }}>This gets better with scale.</div>
+          <div style={{ fontSize:13, color:'var(--color-text-secondary)', maxWidth:340, lineHeight:1.6 }}>Come back soon; the platform is growing.</div>
+        </div>
+      )}
+
+      {gateStatus === 'ok' && <>
       {/* ── Left sidebar filters ── */}
       <div style={{
         width: 220, flexShrink: 0,
@@ -370,6 +397,8 @@ export default function InfluencerCenter() {
         </>
       )}
     </div>
+    </>
+    }
   )
 }
 
