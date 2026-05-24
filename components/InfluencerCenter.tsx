@@ -1,5 +1,6 @@
 'use client'
 import React, { useState, useEffect, useCallback } from 'react'
+import { INDUSTRY_LABELS } from '@/lib/industries'
 
 interface Profile {
   handle: string
