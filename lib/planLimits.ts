@@ -38,3 +38,24 @@ export async function checkPlanLimit(
 
   return { allowed: true }
 }
+
+// Platform-wide data threshold check for Pro-only features
+const PLATFORM_MIN_INFLUENCERS = 10
+
+export async function isProClient(clientId: string): Promise<boolean> {
+  const sb = getSupabaseAdmin()
+  const { data } = await sb
+    .from('clients')
+    .select('plan')
+    .eq('id', clientId)
+    .single()
+  return data?.plan === 'pro'
+}
+
+export async function platformHasEnoughData(): Promise<boolean> {
+  const sb = getSupabaseAdmin()
+  const { count } = await sb
+    .from('influencers')
+    .select('id', { count: 'exact', head: true })
+  return (count || 0) >= PLATFORM_MIN_INFLUENCERS
+}
