@@ -16,7 +16,6 @@ import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
 import InfluencerCenter from '@/components/InfluencerCenter'
 import MarketView from '@/components/MarketView'
-import ProGate from '@/components/ProGate'
 
 interface UserProfile {
   id: string; name: string; email: string; status: string; role: string
@@ -367,17 +366,13 @@ export default function DashboardPage() {
 
         {activeTab === 'influencer-center' && (
           <div style={{ padding: '24px 0' }}>
-            <ProGate status={proGateStatus}>
-              <InfluencerCenter />
-            </ProGate>
+            <InfluencerCenter />
           </div>
         )}
 
         {activeTab === 'market-view' && (
           <div style={{ padding: '24px 0' }}>
-            <ProGate status={proGateStatus}>
-              <MarketView />
-            </ProGate>
+            <MarketView />
           </div>
         )}
 
