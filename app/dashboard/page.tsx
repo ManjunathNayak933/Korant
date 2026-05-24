@@ -15,6 +15,8 @@ import WhatsAppDashboard from '@/components/WhatsAppDashboard'
 import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
 import InfluencerCenter from '@/components/InfluencerCenter'
+import MarketView from '@/components/MarketView'
+import ProGate from '@/components/ProGate'
 
 interface UserProfile {
   id: string; name: string; email: string; status: string; role: string
@@ -50,6 +52,7 @@ const TABS = [
   { id: 'analytics',   label: 'Analytics',      icon: '📊' },
   { id: 'marketplace', label: 'Marketplace',    icon: '🛒',  soon: true },
   { id: 'influencer-center', label: 'Influencer Center', icon: '⭐' },
+  { id: 'market-view',       label: 'Market View',        icon: '🗺️' },
   { id: 'requests',    label: 'Requests',       icon: '🔔' },
 ]
 
@@ -364,7 +367,17 @@ export default function DashboardPage() {
 
         {activeTab === 'influencer-center' && (
           <div style={{ padding: '24px 0' }}>
-            <InfluencerCenter />
+            <ProGate status={proGateStatus}>
+              <InfluencerCenter />
+            </ProGate>
+          </div>
+        )}
+
+        {activeTab === 'market-view' && (
+          <div style={{ padding: '24px 0' }}>
+            <ProGate status={proGateStatus}>
+              <MarketView />
+            </ProGate>
           </div>
         )}
 
