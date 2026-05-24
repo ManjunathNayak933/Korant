@@ -43,7 +43,7 @@ export default function MarketView() {
   const [gateStatus, setGateStatus]   = useState<'loading'|'pro_required'|'insufficient_data'|'ok'>('ok')
   const [data, setData]               = useState<any>(null)
   const [empty, setEmpty]             = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchSuggestions = useCallback(async (q: string, lt: string) => {
     if (q.length < 2) { setSuggestions([]); return }
