@@ -11,6 +11,7 @@ interface Profile {
   avg_clicks_per_content: number
   brand_count: number
   best_fit_category: string | null
+  best_fit_label: string | null
   content_count: number
 }
 
@@ -35,7 +36,7 @@ const fmtRev = (n: number) => '₹'+fmtNum(n)
 
 export default function InfluencerCenter() {
   const [profiles, setProfiles]     = useState<Profile[]>([])
-  const [categories, setCategories] = useState<string[]>([])
+  const [categories, setCategories] = useState<{value:string;label:string}[]>([])
   const [loading, setLoading]       = useState(true)
   const [page, setPage]             = useState(1)
 
@@ -61,7 +62,7 @@ export default function InfluencerCenter() {
     const res  = await fetch('/api/influencer-center?'+p)
     const json = await res.json()
     setProfiles(json.profiles || [])
-    setCategories(json.categories || [])
+    setCategories(json.categories || [])  // [{value, label}]
     setPage(pg)
     setLoading(false)
   }, [platform, category, minRevenue, minClicks, sortBy])
@@ -117,7 +118,7 @@ export default function InfluencerCenter() {
           onChange={e => setCategory(e.target.value)}
           options={[
             { value: '', label: 'All Categories' },
-            ...categories.map(c => ({ value: c, label: c }))
+            ...categories.map(c => ({ value: c.value, label: c.label }))
           ]}
         />
 
@@ -205,7 +206,7 @@ export default function InfluencerCenter() {
                       color:'var(--color-text-secondary)',
                       borderRadius:'var(--border-radius-sm)',
                       padding:'3px 8px',
-                    }}>{p.best_fit_category}</span>
+                    }}>{p.best_fit_label}</span>
                   )}
                 </div>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginBottom:10 }}>
@@ -271,7 +272,7 @@ export default function InfluencerCenter() {
                 <StatBox label='Brands' value={String(selected.brand_count)} />
               </div>
 
-              {selected.best_fit_category && (
+              {selected.best_fit_label && (
                 <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:6 }}>
                   <span style={{ fontSize:12, color:'var(--color-text-secondary)' }}>Best Fit:</span>
                   <span style={{
@@ -279,7 +280,7 @@ export default function InfluencerCenter() {
                     background:'var(--color-background-secondary)',
                     color:'var(--color-text-secondary)',
                     borderRadius:'var(--border-radius-sm)', padding:'3px 8px',
-                  }}>{selected.best_fit_category}</span>
+                  }}>{selected.best_fit_label}</span>
                 </div>
               )}
             </div>
