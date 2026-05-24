@@ -43,6 +43,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           password_hash: req.password_hash,
           plan: req.plan || 'basic',
           affiliate_slug: affiliateSlug,
+          industry: req.industry || null,
         })
         .select('id')
         .single()
