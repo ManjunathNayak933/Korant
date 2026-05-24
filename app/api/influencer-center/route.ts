@@ -4,11 +4,21 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
 import { VALID_INDUSTRIES, INDUSTRY_LABELS } from '@/lib/industries'
+import { isProClient, platformHasEnoughData } from '@/lib/planLimits'
 
 export async function GET(request: NextRequest) {
-  const role = request.headers.get('x-user-role')!
-  if (role !== 'client' && role !== 'admin' && role !== 'agency') {
+  const role   = request.headers.get('x-user-role')!
+  const userId = request.headers.get('x-user-id')!
+
+  if (role !== 'client' && role !== 'admin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+
+  // Pro plan gate — admin bypasses
+  if (role === 'client') {
+    const [pro, hasData] = await Promise.all([isProClient(userId), platformHasEnoughData()])
+    if (!pro) return NextResponse.json({ error: 'pro_required' }, { status: 403 })
+    if (!hasData) return NextResponse.json({ error: 'insufficient_data' }, { status: 503 })
   }
 
   const { searchParams } = new URL(request.url)
