@@ -3,49 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
-// Exact industry values from the signup form — used for filter validation
-const VALID_INDUSTRIES = [
-  'saas',
-  'd2c_fashion','d2c_footwear','d2c_jewellery','d2c_bags',
-  'd2c_skincare','d2c_haircare','d2c_makeup','d2c_personal_care','d2c_nutrition','d2c_health',
-  'd2c_food','d2c_beverages','d2c_organic',
-  'd2c_home','d2c_kitchen',
-  'd2c_electronics','d2c_sports',
-  'd2c_pet','d2c_kids','d2c_gifting',
-  'services','edtech','fintech','healthcare','hospitality','real_estate','other',
-]
-
-// Human-readable labels matching the signup form optgroups
-export const INDUSTRY_LABELS: Record<string, string> = {
-  saas: 'SaaS',
-  d2c_fashion: 'D2C Fashion & Apparel',
-  d2c_footwear: 'D2C Footwear',
-  d2c_jewellery: 'D2C Jewellery',
-  d2c_bags: 'D2C Bags & Luggage',
-  d2c_skincare: 'D2C Skincare',
-  d2c_haircare: 'D2C Haircare',
-  d2c_makeup: 'D2C Makeup & Cosmetics',
-  d2c_personal_care: 'D2C Personal Care & Grooming',
-  d2c_nutrition: 'D2C Nutrition & Supplements',
-  d2c_health: 'D2C Health & Wellness',
-  d2c_food: 'D2C Food & Snacks',
-  d2c_beverages: 'D2C Beverages & Drinks',
-  d2c_organic: 'D2C Organic & Natural',
-  d2c_home: 'D2C Home & Living',
-  d2c_kitchen: 'D2C Kitchen & Cookware',
-  d2c_electronics: 'D2C Electronics & Gadgets',
-  d2c_sports: 'D2C Sports & Fitness',
-  d2c_pet: 'D2C Pet Products',
-  d2c_kids: 'D2C Kids & Baby',
-  d2c_gifting: 'D2C Gifting & Hampers',
-  services: 'Services',
-  edtech: 'EdTech',
-  fintech: 'FinTech',
-  healthcare: 'Healthcare',
-  hospitality: 'Hospitality & Travel',
-  real_estate: 'Real Estate',
-  other: 'Other',
-}
+import { VALID_INDUSTRIES, INDUSTRY_LABELS } from '@/lib/industries'
 
 export async function GET(request: NextRequest) {
   const role = request.headers.get('x-user-role')!
