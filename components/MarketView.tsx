@@ -1,6 +1,5 @@
 'use client'
 import React, { useState, useCallback, useRef } from 'react'
-import { INDUSTRY_LABELS } from '@/lib/industries'
 
 const PLATFORMS = ['instagram','youtube','twitter','linkedin','facebook','snapchat','other']
 const platformIcon: Record<string,string> = {
@@ -24,8 +23,8 @@ interface Influencer {
   id: string; name: string; handle: string
   social_platform: string; clicks: number; revenue: number
 }
-interface CategoryRow {
-  industry: string; label: string; clicks: number
+interface ChannelRow {
+  channel: string; label: string; clicks: number
   sales: number; revenue: number; convRate: number
 }
 interface BuyerRow { pincode: string; orders: number; revenue: number }
@@ -36,7 +35,6 @@ export default function MarketView() {
   const [location, setLocation]       = useState('')
   const [locationType, setLocationType] = useState<'city'|'country'>('city')
   const [channel, setChannel]         = useState('')
-  const [industry, setIndustry]       = useState('')
   const [dateRange, setDateRange]     = useState('30')
   const [buyerMode, setBuyerMode]     = useState(false)
   const [loading, setLoading]         = useState(false)
@@ -76,7 +74,7 @@ export default function MarketView() {
     setLocation(loc); setQuery(loc); setSuggestions([])
     setLoading(true); setData(null); setEmpty(false)
     const params = new URLSearchParams({
-      location: loc, locationType, channel, industry,
+      location: loc, locationType, channel,
       dateRange, buyerMode: String(buyerMode),
     })
     const res  = await fetch('/api/market-view?' + params)
@@ -84,7 +82,7 @@ export default function MarketView() {
     if (json.empty) setEmpty(true)
     else setData(json)
     setLoading(false)
-  }, [locationType, channel, industry, dateRange, buyerMode])
+  }, [locationType, channel, dateRange, buyerMode])
 
   const reSearch = () => { if (location) search(location) }
 
@@ -190,6 +188,7 @@ export default function MarketView() {
         <FilterSelect value={dateRange} onChange={e => setDateRange(e.target.value)} label='Period'
           options={[{ value: '30', label: 'Last 30 days' }, { value: '60', label: 'Last 60 days' }, { value: '90', label: 'Last 90 days' }]} />
 
+
         {/* Buyer location toggle */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 12px',
           border: '0.5px solid var(--color-border-secondary)', borderRadius: 'var(--border-radius-sm)',
@@ -287,28 +286,25 @@ export default function MarketView() {
               )}
             </div>
 
-            {/* Category conversion */}
+            {/* Channel breakdown — this brand's own channels in this location */}
             <div style={panelStyle}>
-              <div style={panelTitle}>Category Performance in {data.location}</div>
-              <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 10 }}>
-                Aggregated across all brands on the platform for this location.
-              </div>
-              {data.categoryBreakdown.length === 0 ? (
-                <div style={{ fontSize: 13, color: 'var(--color-text-tertiary)', padding: '12px 0' }}>No category data yet.</div>
+              <div style={panelTitle}>Your Channels in {data.location}</div>
+              {(!data.channelBreakdown || data.channelBreakdown.length === 0) ? (
+                <div style={{ fontSize: 13, color: 'var(--color-text-tertiary)', padding: '12px 0' }}>No channel data for this location yet.</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {data.categoryBreakdown.map((cat: CategoryRow) => (
-                    <div key={cat.industry} style={{ padding: '8px 10px', background: 'var(--color-background-secondary)', borderRadius: 'var(--border-radius-sm)' }}>
+                  {data.channelBreakdown.map((ch: ChannelRow) => (
+                    <div key={ch.channel} style={{ padding: '8px 10px', background: 'var(--color-background-secondary)', borderRadius: 'var(--border-radius-sm)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)' }}>{cat.label}</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{cat.convRate}%</span>
+                        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)' }}>{ch.label}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{ch.convRate}%</span>
                       </div>
                       <div style={{ height: 3, background: 'var(--color-border-tertiary)', borderRadius: 2 }}>
-                        <div style={{ height: '100%', borderRadius: 2, width: `${Math.min(cat.convRate * 10, 100)}%`, background: 'var(--color-brand)', transition: 'width .4s ease' }} />
+                        <div style={{ height: '100%', borderRadius: 2, width: `${Math.min(ch.convRate * 10, 100)}%`, background: 'var(--color-brand)', transition: 'width .4s ease' }} />
                       </div>
                       <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                        <span>{fmtNum(cat.clicks)} clicks</span>
-                        <span>{fmtRev(cat.revenue)}</span>
+                        <span>{fmtNum(ch.clicks)} clicks</span>
+                        <span>{fmtRev(ch.revenue)}</span>
                       </div>
                     </div>
                   ))}
