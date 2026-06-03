@@ -16,6 +16,7 @@ interface InfluencerMetrics {
   codeRedemptions: number
   cookieSales: number
   avgCostPerClick: number
+  lastClickAt?: string | null
   topCity?: string | null
   topReferrer?: string | null
   deviceBreakdown?: { mobile: number; desktop: number; tablet: number }
@@ -27,7 +28,20 @@ const SORT_OPTIONS = [
   { value: 'clicks',  label: 'Clicks' },
   { value: 'sales',   label: 'Sales' },
   { value: 'revenue', label: 'Revenue' },
+  { value: 'roi',     label: 'ROI' },
 ]
+
+// Inactive threshold: no clicks in 7 days
+const INACTIVE_DAYS = 7
+function isInactive(lastClickAt?: string | null): boolean {
+  if (!lastClickAt) return true
+  const diff = (Date.now() - new Date(lastClickAt).getTime()) / (1000 * 60 * 60 * 24)
+  return diff >= INACTIVE_DAYS
+}
+function calcROI(revenue: number, fee: number): number | null {
+  if (!fee || fee === 0) return null
+  return Math.round(((revenue - fee) / fee) * 100)
+}
 
 export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
   const [influencers, setInfluencers] = useState<Influencer[]>([])
@@ -39,6 +53,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
   const [statsModal, setStatsModal] = useState<Influencer | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  const [showInactive, setShowInactive] = useState(false)
 
   // Fetch asset/visitor data for all influencers
   const { data: assetData } = useAssetData(clientId, month, 'influencer')
@@ -83,12 +98,23 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
     setCopied(slug); setTimeout(() => setCopied(null), 1500)
   }
 
-  const filtered = selectedCampaign ? influencers.filter(i => i.campaign_id === selectedCampaign) : influencers
+  const filtered = influencers
+    .filter(i => !selectedCampaign || i.campaign_id === selectedCampaign)
+    .filter(i => {
+      if (!showInactive) return true
+      const m = metrics[i.id] as InfluencerMetrics
+      return isInactive(m?.lastClickAt)
+    })
   const sorted = [...filtered].sort((a, b) => {
     const ma = (metrics[a.id] || {}) as InfluencerMetrics, mb = (metrics[b.id] || {}) as InfluencerMetrics
     if (sort === 'clicks')  return (mb.clicks || 0) - (ma.clicks || 0)
     if (sort === 'sales')   return (mb.totalSales || 0) - (ma.totalSales || 0)
     if (sort === 'revenue') return (mb.revenueAttributed || 0) - (ma.revenueAttributed || 0)
+    if (sort === 'roi') {
+      const roiA = calcROI(ma.revenueAttributed || 0, a.fee) ?? -Infinity
+      const roiB = calcROI(mb.revenueAttributed || 0, b.fee) ?? -Infinity
+      return roiB - roiA
+    }
     return 0
   })
 
@@ -104,6 +130,10 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
           {SORT_OPTIONS.map(o => (
             <button key={o.value} onClick={() => setSort(o.value)} style={{ padding: '4px 10px', borderRadius: 5, border: `0.5px solid ${sort === o.value ? 'var(--amber)' : 'var(--border2)'}`, background: 'transparent', color: sort === o.value ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{o.label}</button>
           ))}
+          <div style={{ width: 1, height: 16, background: 'var(--border2)', margin: '0 4px' }} />
+          <button onClick={() => setShowInactive(s => !s)} style={{ padding: '4px 10px', borderRadius: 5, border: `0.5px solid ${showInactive ? '#e74c3c' : 'var(--border2)'}`, background: showInactive ? 'rgba(231,76,60,0.1)' : 'transparent', color: showInactive ? '#e74c3c' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>
+            Inactive only
+          </button>
           <button onClick={() => setShowAdd(true)} style={{ border: '0.5px solid var(--amber)', color: 'var(--amber)', background: 'transparent', borderRadius: 7, padding: '6px 13px', fontSize: 12, cursor: 'pointer' }}>+ Influencer</button>
         </div>
       </div>
@@ -149,7 +179,12 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
                     <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>{inf.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{inf.handle} · {inf.social_platform}</div>
                   </div>
-                  {!inf.is_active && <span style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 3, padding: '2px 6px', fontSize: 9, color: 'var(--text-dim)' }}>paused</span>}
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {!inf.is_active && <span style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 3, padding: '2px 6px', fontSize: 9, color: 'var(--text-dim)' }}>paused</span>}
+                    {inf.is_active && isInactive((metrics[inf.id] as InfluencerMetrics)?.lastClickAt) && (
+                      <span style={{ background: 'rgba(231,76,60,0.1)', border: '0.5px solid rgba(231,76,60,0.4)', borderRadius: 3, padding: '2px 6px', fontSize: 9, color: '#e74c3c' }}>inactive 7d</span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Performance stats */}
@@ -167,6 +202,20 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
                   ))}
                 </div>
 
+                {/* ROI card */}
+                {(() => {
+                  const m = (metrics[inf.id] || {}) as InfluencerMetrics
+                  const roi = calcROI(m.revenueAttributed || 0, inf.fee)
+                  if (roi === null) return null
+                  const roiColor = roi >= 0 ? '#2ecc71' : '#e74c3c'
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: roi >= 0 ? 'rgba(46,204,113,0.07)' : 'rgba(231,76,60,0.07)', border: `0.5px solid ${roi >= 0 ? 'rgba(46,204,113,0.25)' : 'rgba(231,76,60,0.25)'}`, borderRadius: 5, padding: '6px 10px', marginBottom: 8 }}>
+                      <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>ROI</span>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: roiColor }}>{roi >= 0 ? '+' : ''}{roi}%</span>
+                      <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>₹{(inf.fee||0).toLocaleString('en-IN')} spent</span>
+                    </div>
+                  )
+                })()}
                 {/* Visitor stats row — unique / returned / shared */}
                 {v && (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 8 }}>
