@@ -142,6 +142,23 @@ export async function GET(request: NextRequest) {
     affiliates  .forEach((a: any) => { affMeta[a.id] = a })
 
     // ── 7. Per-partner stats arrays (deduplicated) ───────────────────────────
+    // Also fetch last click timestamp per influencer for inactive detection
+    const { data: lastClicks } = await sb
+      .from('events')
+      .select('influencer_id, timestamp')
+      .eq('client_id', clientId)
+      .eq('type', 'click')
+      .not('influencer_id', 'is', null)
+      .order('timestamp', { ascending: false })
+
+    // Build map: influencer_id -> most recent click timestamp
+    const lastClickMap: Record<string, string> = {}
+    for (const e of lastClicks || []) {
+      if (e.influencer_id && !lastClickMap[e.influencer_id]) {
+        lastClickMap[e.influencer_id] = e.timestamp
+      }
+    }
+
     const influencerStats = partnerStats
       .filter(p => p.partner_type === 'influencer' && infMeta[p.partner_id])
       .map(p => {
@@ -162,6 +179,7 @@ export async function GET(request: NextRequest) {
           revenueAttributed:p.revenue,
           conversionRate:   p.clicks > 0 ? (p.sales / p.clicks) * 100 : 0,
           avgCostPerClick:  p.clicks > 0 && m.fee > 0 ? m.fee / p.clicks : 0,
+          lastClickAt:      lastClickMap[p.partner_id] || null,
           topCity:          null,
           topReferrer:      null,
           deviceBreakdown:  null,
