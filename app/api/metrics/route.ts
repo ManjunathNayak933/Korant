@@ -63,9 +63,34 @@ export async function GET(request: NextRequest) {
       .select('id, name, handle')
       .eq('client_id', clientId)
     if (campaignId) {
-      infQuery = infQuery.eq('campaign_id', campaignId)
+      // For influencers, filter via junction table (influencer_campaigns) so that
+      // influencers assigned to a campaign via the new many-to-many flow are included,
+      // not just those with campaign_id set directly on the row.
+      const { data: junctionIds } = await sb
+        .from('influencer_campaigns')
+        .select('influencer_id')
+        .eq('campaign_id', campaignId)
+      const junctionInfluencerIds = (junctionIds || []).map((j: any) => j.influencer_id)
+
+      // Also include influencers still using the legacy campaign_id column
+      const { data: legacyInfs } = await sb
+        .from('influencers')
+        .select('id')
+        .eq('client_id', clientId)
+        .eq('campaign_id', campaignId)
+      const legacyIds = (legacyInfs || []).map((i: any) => i.id)
+
+      // Union both sets, deduplicated
+      const allInfluencerIds = [...new Set([...junctionInfluencerIds, ...legacyIds])]
+
+      if (allInfluencerIds.length > 0) {
+        infQuery = infQuery.in('id', allInfluencerIds)
+      } else {
+        // No influencers in this campaign at all — return empty for infQuery
+        infQuery = infQuery.eq('id', '00000000-0000-0000-0000-000000000000')
+      }
+
       pubQuery = pubQuery.eq('campaign_id', campaignId)
-      // Only filter affiliates by campaign if the column exists
       try { affQuery = (affQuery as any).eq('campaign_id', campaignId) } catch { /* skip */ }
     }
 
