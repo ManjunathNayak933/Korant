@@ -21,11 +21,20 @@ export async function GET(request: NextRequest) {
   const sb = getSupabaseAdmin()
   let query = sb
     .from('influencers')
-    .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, is_active, campaign_id, created_at')
+    .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, is_active, campaign_id, created_at, influencer_campaigns(campaign_id)')
     .eq('client_id', clientId)
     .order('created_at', { ascending: false })
 
-  if (campaignId) query = query.eq('campaign_id', campaignId)
+  // Filter by campaign via junction table if campaignId provided
+  if (campaignId) {
+    const { data: junctionIds } = await sb
+      .from('influencer_campaigns')
+      .select('influencer_id')
+      .eq('campaign_id', campaignId)
+    const ids = (junctionIds || []).map((j: any) => j.influencer_id)
+    if (ids.length === 0) return NextResponse.json([])
+    query = query.in('id', ids)
+  }
 
   const { data, error } = await query
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -48,7 +57,29 @@ export async function POST(request: NextRequest) {
   if (!limit.allowed) return NextResponse.json({ error: limit.message }, { status: 403 })
 
   const sb = getSupabaseAdmin()
-  const slugBase = body.handle.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const normalHandle = body.handle.replace(/^@/, '').toLowerCase().trim()
+
+  // Check if this influencer already exists for this client
+  const { data: existing } = await sb
+    .from('influencers')
+    .select('id, name, campaign_id')
+    .eq('client_id', clientId)
+    .ilike('handle', normalHandle)
+    .eq('social_platform', body.social_platform || 'instagram')
+    .maybeSingle()
+
+  if (existing) {
+    // Influencer already exists — just tag to the new campaign via junction table
+    if (body.campaign_id && body.campaign_id !== existing.campaign_id) {
+      await sb.from('influencer_campaigns').upsert({
+        influencer_id: existing.id,
+        campaign_id: body.campaign_id,
+      }, { onConflict: 'influencer_id,campaign_id', ignoreDuplicates: true })
+    }
+    return NextResponse.json({ ...existing, _existed: true }, { status: 200 })
+  }
+
+  const slugBase = normalHandle.replace(/[^a-z0-9]/g, '')
   const redirect_slug = await ensureUniqueSlug(slugBase)
 
   const discountCode = body.discount_code?.toUpperCase() || null
@@ -94,6 +125,14 @@ export async function POST(request: NextRequest) {
         await sb.from('influencers').update(updates).eq('id', data.id)
       }
     } catch {}
+  }
+
+  // Also write to junction table if campaign assigned
+  if (data && body.campaign_id) {
+    await sb.from('influencer_campaigns').upsert({
+      influencer_id: data.id,
+      campaign_id: body.campaign_id,
+    }, { onConflict: 'influencer_id,campaign_id', ignoreDuplicates: true })
   }
 
   await cacheDel(listKey('influencers', clientId))
