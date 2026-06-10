@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from './supabase'
 
-const META_VERSION = 'v19.0'
+const META_VERSION = 'v22.0'
 const META_BASE = `https://graph.facebook.com/${META_VERSION}`
 
 export interface WAConfig {
