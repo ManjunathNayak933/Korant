@@ -10,6 +10,8 @@ export async function GET(request: NextRequest) {
   const clientId = searchParams.get('clientId') || (role === 'client' ? userId : null)
 
   if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
   const { data, error } = await sb
@@ -29,6 +31,8 @@ export async function POST(request: NextRequest) {
   const clientId = body.clientId || (role === 'client' ? userId : null)
 
   if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   if (!body.name || body.commission_value === undefined) {
     return NextResponse.json({ error: 'name, commission_value required' }, { status: 400 })
   }
