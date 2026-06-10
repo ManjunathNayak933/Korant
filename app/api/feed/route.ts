@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const clientId = searchParams.get('clientId') || (role === 'client' ? userId : null)
   if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
   const now = new Date()
