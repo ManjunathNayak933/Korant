@@ -73,7 +73,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .from('influencers')
       .select('id, name, campaign_id, fee')
       .eq('client_id', clientId)
-      .eq('discount_code', discountCode.toUpperCase())
+      .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
       .single()
 
@@ -89,7 +89,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .from('affiliates')
       .select('id, name, campaign_id, commission_type, commission_value, commission_trigger')
       .eq('client_id', clientId)
-      .eq('discount_code', discountCode.toUpperCase())
+      .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
       .eq('commission_trigger', 'per_sale')
       .single()
