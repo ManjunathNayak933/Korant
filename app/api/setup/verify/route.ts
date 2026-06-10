@@ -83,14 +83,14 @@ export async function POST(req: NextRequest) {
     case 'whatsapp': {
       const { data } = await sb
         .from('whatsapp_configs')
-        .select('phone_number_id, display_name')
+        .select('phone_number_id, phone_display')
         .eq('client_id', clientId)
         .maybeSingle()
       const ok = !!data?.phone_number_id
       return NextResponse.json({
         ok,
         message: ok
-          ? `WhatsApp connected — ${data.display_name || data.phone_number_id} ✓`
+          ? `WhatsApp connected — ${data.phone_display || data.phone_number_id} ✓`
           : 'WhatsApp not connected. Add your phone number ID in the WhatsApp settings.',
       })
     }
@@ -98,10 +98,9 @@ export async function POST(req: NextRequest) {
     // ── 5. Analytics (GSC) — check token exists ───────────────────────────────
     case 'analytics': {
       const { data } = await sb
-        .from('integrations')
-        .select('provider, connected_at')
+        .from('gsc_connections')
+        .select('connected_at')
         .eq('client_id', clientId)
-        .eq('provider', 'gsc')
         .maybeSingle()
       const ok = !!data
       return NextResponse.json({
@@ -118,7 +117,7 @@ export async function POST(req: NextRequest) {
         .from('journey_touchpoints')
         .select('*', { count: 'exact', head: true })
         .eq('client_id', clientId)
-        .gte('visited_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+        .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
       const ok = (count || 0) > 0
       return NextResponse.json({
         ok,
