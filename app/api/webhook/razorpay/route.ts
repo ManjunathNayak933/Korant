@@ -15,11 +15,23 @@ export async function POST(request: NextRequest) {
   const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).single()
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
-  // Verify signature
-  const webhookSecret = request.headers.get('x-webhook-secret')
-  if (client.webhook_secret && webhookSecret !== client.webhook_secret) {
-    return NextResponse.json({ error: 'Invalid secret' }, { status: 401 })
+  // Verify Razorpay's real signature: HMAC-SHA256(rawBody, webhook_secret) as hex,
+  // delivered in the X-Razorpay-Signature header. Fail closed if no secret set.
+  if (!client.webhook_secret) {
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
   }
+  const sigHeader = request.headers.get('x-razorpay-signature') || ''
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey('raw', enc.encode(client.webhook_secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sigBytes = await crypto.subtle.sign('HMAC', key, enc.encode(body))
+  const computed = Array.from(new Uint8Array(sigBytes)).map(b => b.toString(16).padStart(2, '0')).join('')
+  // constant-time-ish compare
+  let ok = computed.length === sigHeader.length
+  for (let i = 0; i < computed.length && i < sigHeader.length; i++) {
+    if (computed[i] !== sigHeader[i]) ok = false
+  }
+  if (!ok) return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
 
   let payload: any
   try { payload = JSON.parse(body) } catch {
