@@ -1,19 +1,38 @@
 import { getSupabaseAdmin } from './supabase'
 
-async function shopifyFetch(domain: string, token: string, path: string, method = 'GET', body?: unknown) {
-  const res = await fetch(`https://${domain}/admin/api/2026-04${path}`, {
-    method,
+// Shopify Admin GraphQL API. The REST PriceRule/DiscountCode resources used
+// previously are deprecated by Shopify (removal on the 2026 path), so discount
+// management now uses the GraphQL discount mutations.
+//
+// NOTE: the `shopify_price_rule_id` column (bigint) now stores the numeric part
+// of the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>). The function
+// names are kept for interface stability with existing callers.
+const API_VERSION = '2026-04'
+
+async function shopifyGraphQL(
+  domain: string, token: string, query: string, variables?: Record<string, unknown>
+) {
+  const res = await fetch(`https://${domain}/admin/api/${API_VERSION}/graphql.json`, {
+    method: 'POST',
     headers: {
       'X-Shopify-Access-Token': token,
       'Content-Type': 'application/json',
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: JSON.stringify({ query, variables }),
   })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Shopify ${method} ${path} failed: ${res.status} ${text}`)
+  const json = await res.json()
+  if (!res.ok || json.errors) {
+    throw new Error(`Shopify GraphQL failed: ${res.status} ${JSON.stringify(json.errors || json)}`)
   }
-  return res.json()
+  return json.data
+}
+
+function gidToNumericId(gid: string): number {
+  const m = String(gid).match(/(\d+)\s*$/)
+  return m ? Number(m[1]) : 0
+}
+function discountGid(id: number | string): string {
+  return `gid://shopify/DiscountCodeNode/${id}`
 }
 
 export async function getClientShopify(clientId: string) {
@@ -37,42 +56,53 @@ export async function createShopifyDiscountCode(
   if (!client) return null
 
   try {
-    // Check if discount code already exists — if so, return its existing price rule
+    // If the code already exists, return its existing node id (idempotent).
     try {
-      const existing = await shopifyFetch(client.shopify_domain, client.shopify_token,
-        `/discount_codes/lookup.json?code=${encodeURIComponent(discountCode)}`)
-      if (existing?.discount_code) {
-        return { priceRuleId: existing.discount_code.price_rule_id, discountCodeId: existing.discount_code.id }
+      const data = await shopifyGraphQL(
+        client.shopify_domain, client.shopify_token,
+        `query LookupCode($code: String!) {
+           codeDiscountNodeByCode(code: $code) { id }
+         }`,
+        { code: discountCode }
+      )
+      const existingGid = data?.codeDiscountNodeByCode?.id
+      if (existingGid) {
+        const numId = gidToNumericId(existingGid)
+        return { priceRuleId: numId, discountCodeId: numId }
       }
-    } catch {} // code doesn't exist yet — proceed to create
+    } catch { /* not found — proceed to create */ }
 
-    const valueType = fixedAmount ? 'fixed_amount' : 'percentage'
-    const value = fixedAmount ? `-${fixedAmount}` : `-${percentOff}`
+    // GraphQL percentage is a fraction (0.1 = 10%); fixed amount is a string.
+    const value = (fixedAmount !== undefined && fixedAmount !== null)
+      ? { discountAmount: { amount: String(fixedAmount), appliesOnEachItem: false } }
+      : { percentage: percentOff / 100 }
 
-    const ruleRes = await shopifyFetch(client.shopify_domain, client.shopify_token, '/price_rules.json', 'POST', {
-      price_rule: {
-        title: `KORANT-${discountCode}`,
-        target_type: 'line_item',
-        target_selection: 'all',
-        allocation_method: 'across',
-        value_type: valueType,
-        value,
-        customer_selection: 'all',
-        starts_at: new Date().toISOString(),
-        usage_limit: null,
-        once_per_customer: false,
-      },
-    })
-
-    const priceRuleId = ruleRes.price_rule.id
-
-    const codeRes = await shopifyFetch(
+    const data = await shopifyGraphQL(
       client.shopify_domain, client.shopify_token,
-      `/price_rules/${priceRuleId}/discount_codes.json`, 'POST',
-      { discount_code: { code: discountCode } }
+      `mutation Create($basicCodeDiscount: DiscountCodeBasicInput!) {
+         discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
+           codeDiscountNode { id }
+           userErrors { field message }
+         }
+       }`,
+      {
+        basicCodeDiscount: {
+          title: `KORANT-${discountCode}`,
+          code: discountCode,
+          startsAt: new Date().toISOString(),
+          customerSelection: { all: true }, // deprecated but valid; "all customers"
+          customerGets: { value, items: { all: true } },
+          appliesOncePerCustomer: false,
+        },
+      }
     )
 
-    return { priceRuleId, discountCodeId: codeRes.discount_code.id }
+    const payload = data.discountCodeBasicCreate
+    if (payload.userErrors?.length) {
+      throw new Error(payload.userErrors.map((e: any) => e.message).join('; '))
+    }
+    const numId = gidToNumericId(payload.codeDiscountNode.id)
+    return { priceRuleId: numId, discountCodeId: numId }
   } catch (e) {
     console.error('Shopify discount creation failed:', e)
     return null
@@ -89,32 +119,29 @@ export async function updateShopifyDiscountCode(
   if (!client) return false
 
   try {
-    // Update the price rule title
-    await shopifyFetch(client.shopify_domain, client.shopify_token,
-      `/price_rules/${priceRuleId}.json`, 'PUT', {
-        price_rule: {
-          id: priceRuleId,
+    // GraphQL updates the code on the same node directly — no delete/recreate.
+    const data = await shopifyGraphQL(
+      client.shopify_domain, client.shopify_token,
+      `mutation Update($id: ID!, $basicCodeDiscount: DiscountCodeBasicInput!) {
+         discountCodeBasicUpdate(id: $id, basicCodeDiscount: $basicCodeDiscount) {
+           codeDiscountNode { id }
+           userErrors { field message }
+         }
+       }`,
+      {
+        id: discountGid(priceRuleId),
+        basicCodeDiscount: {
           title: `KORANT-${newCode}`,
-          value: `-${percentOff}`,
-        }
+          code: newCode,
+          customerGets: { value: { percentage: percentOff / 100 } },
+        },
       }
     )
-
-    // Get existing codes and delete them
-    const codesRes = await shopifyFetch(client.shopify_domain, client.shopify_token,
-      `/price_rules/${priceRuleId}/discount_codes.json`
-    )
-    for (const code of codesRes.discount_codes || []) {
-      await shopifyFetch(client.shopify_domain, client.shopify_token,
-        `/price_rules/${priceRuleId}/discount_codes/${code.id}.json`, 'DELETE'
-      )
+    const payload = data.discountCodeBasicUpdate
+    if (payload.userErrors?.length) {
+      console.error('Shopify discount update errors:', payload.userErrors)
+      return false
     }
-
-    // Create new code
-    await shopifyFetch(client.shopify_domain, client.shopify_token,
-      `/price_rules/${priceRuleId}/discount_codes.json`, 'POST',
-      { discount_code: { code: newCode } }
-    )
     return true
   } catch (e) {
     console.error('Shopify discount update failed:', e)
@@ -130,18 +157,27 @@ export async function deleteShopifyPriceRule(
   if (!client) return
 
   try {
-    await shopifyFetch(client.shopify_domain, client.shopify_token,
-      `/price_rules/${priceRuleId}.json`, 'DELETE'
+    const data = await shopifyGraphQL(
+      client.shopify_domain, client.shopify_token,
+      `mutation Delete($id: ID!) {
+         discountCodeDelete(id: $id) {
+           deletedCodeDiscountId
+           userErrors { field message }
+         }
+       }`,
+      { id: discountGid(priceRuleId) }
     )
+    const errs = data.discountCodeDelete?.userErrors
+    if (errs?.length) console.error('Shopify discount delete errors:', errs)
   } catch (e) {
-    console.error('Shopify price rule deletion failed:', e)
+    console.error('Shopify discount deletion failed:', e)
   }
 }
 
 export async function verifyShopifyWebhook(request: Request, secret: string): Promise<boolean> {
   const body = await request.text()
   // Support both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 header formats (2026-01+)
-  const hmac = request.headers.get('X-Shopify-Hmac-Sha256') 
+  const hmac = request.headers.get('X-Shopify-Hmac-Sha256')
     || request.headers.get('x-shopify-hmac-sha256')
     || request.headers.get('shopify-hmac-sha256')
     || ''
