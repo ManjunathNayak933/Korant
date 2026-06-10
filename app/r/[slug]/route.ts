@@ -89,5 +89,18 @@ export async function GET(
   const destUrl = link?.destination_url || '/'
   const res = NextResponse.redirect(destUrl, 302)
   if (isNewVisitor) res.headers.set('Set-Cookie', buildVisitorCookie(visitorId))
+
+  // Attribution cookies the checkout snippets + webhooks rely on (README priorities 3-5).
+  // last-touch (30d) always overwrites; first-touch (90d) only set once.
+  if (link || waLink) {
+    const cookies = res.headers.get('Set-Cookie') ? [res.headers.get('Set-Cookie')!] : []
+    cookies.push(`mk_slug=${slug}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax; Secure`)
+    const hasFirst = (request.headers.get('cookie') || '').includes('mk_slug_first=')
+    if (!hasFirst) {
+      cookies.push(`mk_slug_first=${slug}; Path=/; Max-Age=${90 * 24 * 60 * 60}; SameSite=Lax; Secure`)
+    }
+    res.headers.delete('Set-Cookie')
+    for (const c of cookies) res.headers.append('Set-Cookie', c)
+  }
   return res
 }
