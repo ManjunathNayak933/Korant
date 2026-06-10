@@ -30,11 +30,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unknown shop domain' }, { status: 404 })
   }
 
-  // Verify HMAC
-  if (client.webhook_secret) {
-    const valid = await verifyShopifyHmac(body, hmacHeader, client.webhook_secret)
-    if (!valid) return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
+  // Verify HMAC — fail closed: a live client MUST have a webhook_secret set.
+  if (!client.webhook_secret) {
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
   }
+  const valid = await verifyShopifyHmac(body, hmacHeader, client.webhook_secret)
+  if (!valid) return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
 
   let order: any
   try {
