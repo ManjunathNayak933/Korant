@@ -1,8 +1,12 @@
 import { SignJWT, jwtVerify } from 'jose'
+import bcrypt from 'bcryptjs'
 import { getSupabaseAdmin } from './supabase'
 import type { JWTPayload, UserRole } from './supabase'
 
 const COOKIE_NAME = 'mk_token'
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET must be set in production')
+}
 const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'fallback-secret-change-in-production-32chars'
 )
@@ -26,16 +30,19 @@ async function hashPasswordCrypto(password: string): Promise<string> {
   return `pbkdf2:${saltHex}:${hashHex}`
 }
 
+// Returns true if a stored hash is a legacy bcrypt hash that should be
+// upgraded to PBKDF2 on the next successful login.
+export function passwordNeedsRehash(stored: string): boolean {
+  return typeof stored === 'string' && stored.startsWith('$2')
+}
+
 async function verifyPasswordCrypto(password: string, stored: string): Promise<boolean> {
   try {
-    // Support legacy bcrypt hashes — if they start with $2 it's bcrypt
-    // We cannot verify bcrypt on edge, so we fall back to a plain compare
-    // for migration period. New passwords will use pbkdf2.
+    // Legacy bcrypt hashes ($2a/$2b/$2y). bcryptjs is pure-JS and runs on the
+    // edge (compareSync needs no RNG — the salt is embedded in the hash).
+    // On a successful login the caller rehashes to PBKDF2 (see loginUser).
     if (stored.startsWith('$2')) {
-      // Cannot run bcrypt on edge — this will fail for old passwords
-      // until they re-login and get a new hash. Return false gracefully.
-      // To migrate: re-hash on first successful login via admin panel.
-      return false
+      try { return bcrypt.compareSync(password, stored) } catch { return false }
     }
     if (!stored.startsWith('pbkdf2:')) return false
     const [, saltHex, storedHashHex] = stored.split(':')
@@ -136,6 +143,13 @@ export async function loginUser(
     const match = await verifyPasswordCrypto(password, agency.password_hash)
     if (!match) return null
     if (agency.status === 'suspended') return null
+    // Upgrade legacy bcrypt hash to PBKDF2 now that we have the plaintext.
+    if (passwordNeedsRehash(agency.password_hash)) {
+      try {
+        const newHash = await hashPasswordCrypto(password)
+        await sb.from('agencies').update({ password_hash: newHash }).eq('id', agency.id)
+      } catch { /* best-effort; don't block login */ }
+    }
     const token = await signToken({ sub: agency.id, role: 'agency', email, name: agency.name })
     return { token, role: 'agency', redirectPath: '/agency', name: agency.name }
   }
