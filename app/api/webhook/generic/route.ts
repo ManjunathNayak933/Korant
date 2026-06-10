@@ -18,7 +18,10 @@ export async function POST(request: NextRequest) {
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
   const webhookSecret = request.headers.get('x-webhook-secret')
-  if (client.webhook_secret && webhookSecret !== client.webhook_secret) {
+  if (!client.webhook_secret) {
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
+  }
+  if (webhookSecret !== client.webhook_secret) {
     return NextResponse.json({ error: 'Invalid webhook secret' }, { status: 401 })
   }
 
