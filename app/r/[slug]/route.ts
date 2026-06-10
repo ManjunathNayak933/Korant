@@ -1,106 +1,85 @@
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
+import { getRequestContext } from '@cloudflare/next-on-pages'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { resolveLink } from '@/lib/links'
 import {
   generateVisitorId,
   getVisitorCookie,
   buildVisitorCookie,
   detectEntrySource,
-  recordTouchpoint,
 } from '@/lib/visitor'
+
+// Run a promise after the response is sent so the 302 isn't blocked by the
+// DB write. Falls back to fire-and-forget if the CF context isn't available.
+function background(p: Promise<unknown>) {
+  try {
+    getRequestContext().ctx.waitUntil(p)
+  } catch {
+    void p
+  }
+}
 
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ slug: string }> }
 ) {
   const { slug } = await context.params
-  const sb = getSupabaseAdmin()
 
-  const { data: link } = await sb
-    .from('tracking_links').select('*').eq('slug', slug).single()
-
-  let waLink: any = null
-  if (!link) {
-    const { data: wa } = await sb
-      .from('whatsapp_campaigns').select('client_id, tracking_slug, campaign_id').eq('tracking_slug', slug).single()
-    waLink = wa
-  }
+  // 1 KV read on warm cache (was 2-3 Postgres queries)
+  const link = await resolveLink(slug)
 
   let visitorId = getVisitorCookie(request)
   const isNewVisitor = !visitorId
   if (!visitorId) visitorId = generateVisitorId()
 
-  const entrySource = detectEntrySource(request)
-  const clientId = link?.client_id || waLink?.client_id
-
-  if (clientId) {
-    const channel = link?.influencer_id  ? 'influencer'
-      : link?.publication_id ? 'seo'
-      : link?.affiliate_id   ? 'affiliate'
-      : waLink               ? 'whatsapp'
-      : 'direct'
-
-    let partnerName = ''
-    if (link?.influencer_id) {
-      const { data: inf } = await sb.from('influencers').select('name').eq('id', link.influencer_id).single()
-      partnerName = inf?.name || ''
-    } else if (link?.affiliate_id) {
-      const { data: aff } = await sb.from('affiliates').select('name').eq('id', link.affiliate_id).single()
-      partnerName = aff?.name || ''
-    } else if (link?.publication_id) {
-      const { data: pub } = await sb.from('publications').select('publication_name').eq('id', link.publication_id).single()
-      partnerName = pub?.publication_name || ''
-    }
-
-    const touchResult = await recordTouchpoint({
-      clientId,
-      visitorId,
-      channel,
-      partnerId:     link?.influencer_id || link?.affiliate_id || link?.publication_id || null,
-      partnerName,
-      campaignId:    link?.campaign_id || waLink?.campaign_id || null,
-      eventType:     'click',
-      entrySource,
-      isReturnVisit: !isNewVisitor,
-    })
-
-    await sb.from('events').insert({
-      client_id:       clientId,
-      type:            'click',
-      influencer_id:   link?.influencer_id  || null,
-      publication_id:  link?.publication_id || null,
-      affiliate_id:    link?.affiliate_id   || null,
-      campaign_id:     link?.campaign_id    || null,
-      timestamp:       new Date().toISOString(),
-      city:            request.headers.get('cf-ipcity')      || null,
-      country:         request.headers.get('cf-ipcountry')   || null,
-      lat:             request.headers.get('cf-iplatitude')  ? parseFloat(request.headers.get('cf-iplatitude')!) : null,
-      lon:             request.headers.get('cf-iplongitude') ? parseFloat(request.headers.get('cf-iplongitude')!) : null,
-      referrer:        request.headers.get('referer')        || null,
-      visitor_id:      visitorId,
-      journey_id:      touchResult.journeyId,
-      touch_number:    touchResult.touchNumber,
-      is_return_visit: !isNewVisitor,
-      first_channel:   channel,
-      entry_source:    entrySource,
-    })
-  }
-
-  const destUrl = link?.destination_url || '/'
+  // Build + return the redirect immediately
+  const destUrl = link?.destinationUrl || '/'
   const res = NextResponse.redirect(destUrl, 302)
-  if (isNewVisitor) res.headers.set('Set-Cookie', buildVisitorCookie(visitorId))
 
-  // Attribution cookies the checkout snippets + webhooks rely on (README priorities 3-5).
-  // last-touch (30d) always overwrites; first-touch (90d) only set once.
-  if (link || waLink) {
-    const cookies = res.headers.get('Set-Cookie') ? [res.headers.get('Set-Cookie')!] : []
+  const cookies: string[] = []
+  if (isNewVisitor) cookies.push(buildVisitorCookie(visitorId))
+  if (link?.found) {
     cookies.push(`mk_slug=${slug}; Path=/; Max-Age=${30 * 24 * 60 * 60}; SameSite=Lax; Secure`)
     const hasFirst = (request.headers.get('cookie') || '').includes('mk_slug_first=')
     if (!hasFirst) {
       cookies.push(`mk_slug_first=${slug}; Path=/; Max-Age=${90 * 24 * 60 * 60}; SameSite=Lax; Secure`)
     }
-    res.headers.delete('Set-Cookie')
-    for (const c of cookies) res.headers.append('Set-Cookie', c)
   }
+  for (const c of cookies) res.headers.append('Set-Cookie', c)
+
+  // Track in the background: ONE rpc instead of ~6 sequential round-trips
+  if (link?.found && link.clientId) {
+    const entrySource = detectEntrySource(request)
+    const sb = getSupabaseAdmin()
+    const lat = request.headers.get('cf-iplatitude')
+    const lon = request.headers.get('cf-iplongitude')
+
+    const write = sb.rpc('record_click', {
+      p_client_id:      link.clientId,
+      p_visitor_id:     visitorId,
+      p_channel:        link.channel,
+      p_entry_source:   entrySource,
+      p_partner_id:     link.influencerId || link.affiliateId || link.publicationId || null,
+      p_partner_name:   link.partnerName,
+      p_campaign_id:    link.campaignId,
+      p_event_type:     'click',
+      p_influencer_id:  link.influencerId,
+      p_publication_id: link.publicationId,
+      p_affiliate_id:   link.affiliateId,
+      p_city:           request.headers.get('cf-ipcity')    || null,
+      p_country:        request.headers.get('cf-ipcountry') || null,
+      p_lat:            lat ? parseFloat(lat) : null,
+      p_lon:            lon ? parseFloat(lon) : null,
+      p_referrer:       request.headers.get('referer')      || null,
+    })
+
+    background(
+      Promise.resolve(write).then(({ error }: any) => {
+        if (error) console.error('record_click failed', error)
+      })
+    )
+  }
+
   return res
 }
