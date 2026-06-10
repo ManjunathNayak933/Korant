@@ -20,7 +20,10 @@ async function refreshGSCToken(refreshToken: string) {
 
 export async function GET(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
+  const role = request.headers.get('x-user-role')!
   const clientId = new URL(request.url).searchParams.get('clientId') || userId
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
   const { data: conn } = await sb.from('gsc_connections').select('*').eq('client_id', clientId).single()
@@ -59,8 +62,11 @@ export async function GET(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
+  const role = request.headers.get('x-user-role')!
   const body = await request.json()
   const clientId = body.clientId || userId
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
   await sb.from('gsc_connections').update({
@@ -74,7 +80,10 @@ export async function PATCH(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
+  const role = request.headers.get('x-user-role')!
   const clientId = new URL(request.url).searchParams.get('clientId') || userId
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
   await sb.from('gsc_connections').delete().eq('client_id', clientId)
