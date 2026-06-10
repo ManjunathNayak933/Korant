@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown'
-    if (!checkRateLimit(`login:${ip}`)) {
+    if (!(await checkRateLimit(`login:${ip}`))) {
       return NextResponse.json({ error: 'Too many login attempts. Try again in 15 minutes.' }, { status: 429 })
     }
 
