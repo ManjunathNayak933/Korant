@@ -4,7 +4,10 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export async function GET(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
+  const role = request.headers.get('x-user-role')!
   const clientId = new URL(request.url).searchParams.get('clientId') || userId
+  if (role === 'client' && clientId !== userId)
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/integrations/gsc/callback`
   const params = new URLSearchParams({
