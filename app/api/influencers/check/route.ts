@@ -2,6 +2,7 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { INDUSTRY_LABELS } from '@/lib/industries'
 
 // GET /api/influencers/check?handle=X&platform=Y&clientId=Z
 // Returns:
@@ -33,8 +34,11 @@ export async function GET(request: NextRequest) {
       .maybeSingle(),
 
     // 2. In Influencer Center? (other brands tracked her — meets 500 click threshold)
+    // NOTE: best_fit_label is NOT a column on the influencer_center view — it's
+    // derived from best_fit_category in JS below. Selecting it made this query
+    // error (so Center matches silently never surfaced).
     sb.from('influencer_center')
-      .select('handle, platform, name, social_url, total_clicks, total_revenue, avg_clicks_per_content, brand_count, best_fit_category, best_fit_label')
+      .select('handle, platform, name, social_url, total_clicks, total_revenue, avg_clicks_per_content, brand_count, best_fit_category')
       .ilike('handle', handle)
       .eq('platform', platform)
       .eq('meets_threshold', true)
@@ -52,6 +56,16 @@ export async function GET(request: NextRequest) {
     if (camp) campaignNames[camp.id] = camp.name
   }
 
+  // Derive the human label from best_fit_category (the view has no label column).
+  const platformData = platformRes.data
+    ? {
+        ...platformRes.data,
+        best_fit_label: platformRes.data.best_fit_category
+          ? (INDUSTRY_LABELS[platformRes.data.best_fit_category] || platformRes.data.best_fit_category)
+          : null,
+      }
+    : null
+
   if (ownRes.data) {
     return NextResponse.json({
       status: 'own',
@@ -60,14 +74,14 @@ export async function GET(request: NextRequest) {
         campaign_name: ownRes.data.campaign_id ? campaignNames[ownRes.data.campaign_id] : null,
       },
       // Also pass platform data if available so the card can show richer info
-      platformData: platformRes.data || null,
+      platformData,
     })
   }
 
-  if (platformRes.data) {
+  if (platformData) {
     return NextResponse.json({
       status: 'platform',
-      platformData: platformRes.data,
+      platformData,
     })
   }
 
