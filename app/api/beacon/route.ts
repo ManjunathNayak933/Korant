@@ -1,9 +1,11 @@
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
-import { getVisitorCookie, detectEntrySource, recordTouchpoint } from '@/lib/visitor'
+import { getRequestContext } from '@cloudflare/next-on-pages'
+import { getVisitorCookie, detectEntrySource } from '@/lib/visitor'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { enqueueEvent, writeEventDirect, type TrackEvent } from '@/lib/event-queue'
 
-// CORS — this endpoint is called from client's own store domain
+// CORS — this endpoint is called from the client's own store domain
 function corsHeaders(req: NextRequest) {
   const origin = req.headers.get('origin') || '*'
   return {
@@ -11,6 +13,21 @@ function corsHeaders(req: NextRequest) {
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   }
+}
+
+const PIXEL_HEADERS = (req: NextRequest) => ({
+  ...corsHeaders(req),
+  'Content-Type': 'image/gif',
+  'Cache-Control': 'no-store',
+})
+
+function pixel(req: NextRequest) {
+  return new NextResponse('1x1', { status: 200, headers: PIXEL_HEADERS(req) })
+}
+
+// Run a promise after the response is sent (non-blocking), like the redirect does.
+function background(p: Promise<unknown>) {
+  try { getRequestContext().ctx.waitUntil(p) } catch { void p }
 }
 
 export async function OPTIONS(req: NextRequest) {
@@ -21,71 +38,51 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const clientId = searchParams.get('cid')
-    const page     = searchParams.get('p') || ''
-    const eventType = searchParams.get('e') || 'pageview' // pageview, purchase, cart
+    const page = searchParams.get('p') || ''
+    const eventType = searchParams.get('e') || 'pageview' // pageview | purchase | cart
 
-    if (!clientId) {
-      return new NextResponse('1x1', { status: 200, headers: { ...corsHeaders(request), 'Content-Type': 'image/gif' } })
-    }
+    if (!clientId) return pixel(request)
 
     const visitorId = getVisitorCookie(request)
-    if (!visitorId) {
-      // New visitor with no tracking link — organic/direct, no cookie yet
-      return new NextResponse('1x1', { status: 200, headers: { ...corsHeaders(request), 'Content-Type': 'image/gif' } })
-    }
+    // New visitor with no tracking link → organic/direct, no cookie yet. Nothing
+    // to attribute (we only track visitors who arrived via a known link).
+    if (!visitorId) return pixel(request)
+
+    const sb = getSupabaseAdmin()
+    // ONE read of visitor_first_touch — and we cache the "this visitor is known"
+    // fact in KV, because once a first-touch row exists it never disappears.
+    // That turns ~450M gate reads/month into mostly-free KV hits. (Previously
+    // this table was read twice per pageview — here and inside recordTouchpoint.)
+    const known = await isVisitorKnown(clientId, visitorId, sb, background)
+    if (!known) return pixel(request) // unknown visitor → no journey noise
 
     const entrySource = detectEntrySource(request)
+    const channel =
+      entrySource === 'organic_search' ? 'organic' :
+      entrySource === 'social' ? 'social' :
+      entrySource === 'email' ? 'email' : 'direct'
 
-    // Check if this visitor has been seen before
-    const sb = getSupabaseAdmin()
-    const { data: firstTouch } = await sb
-      .from('visitor_first_touch')
-      .select('first_seen_at, first_channel, converted')
-      .eq('client_id', clientId)
-      .eq('visitor_id', visitorId)
-      .single()
-
-    if (!firstTouch) {
-      return new NextResponse('1x1', { status: 200, headers: { ...corsHeaders(request), 'Content-Type': 'image/gif' } })
-    }
-
-    const isReturnVisit = true
-    const channel = entrySource === 'organic_search' ? 'organic' :
-                    entrySource === 'social' ? 'social' :
-                    entrySource === 'email' ? 'email' : 'direct'
-
-    await recordTouchpoint({
+    const event: TrackEvent = {
+      v: 1,
+      kind: eventType === 'purchase' ? 'purchase' : 'pageview',
       clientId,
       visitorId,
       channel,
-      eventType: eventType === 'purchase' ? 'purchase' : 'return_visit',
       entrySource,
-      isReturnVisit,
-    })
-
-    // If purchase event, mark converted
-    if (eventType === 'purchase' && !firstTouch.converted) {
-      const { markVisitorConverted } = await import('@/lib/visitor')
-      await markVisitorConverted(clientId, visitorId)
+      page,
+      ts: new Date().toISOString(),
     }
 
-    // Also record in events table for existing analytics
-    if (eventType === 'purchase') {
-      await sb.from('events').insert({
-        client_id:       clientId,
-        type:            'cookie_sale',
-        visitor_id:      visitorId,
-        is_return_visit: true,
-        entry_source:    entrySource,
-        first_channel:   firstTouch.first_channel,
-        timestamp:       new Date().toISOString(),
-      })
-    }
+    // Hot path: enqueue and return the pixel immediately. The actual DB writes
+    // (journey_touchpoints insert + visitor_first_touch counter update, plus the
+    // purchase events row) happen in the batch consumer.
+    const queued = await enqueueEvent(event, background)
 
-    return new NextResponse('1x1', {
-      status: 200,
-      headers: { ...corsHeaders(request), 'Content-Type': 'image/gif', 'Cache-Control': 'no-store' }
-    })
+    // Fallback: if no queue is configured, write directly in the background so
+    // behaviour is identical to before. The pixel still returns without waiting.
+    if (!queued) background(writeEventDirect(event))
+
+    return pixel(request)
   } catch (err) {
     console.error('beacon error:', err)
     return new NextResponse('1x1', { status: 200, headers: { 'Content-Type': 'image/gif' } })
