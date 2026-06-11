@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
     if (role === 'agency') {
       const sb0 = getSupabaseAdmin()
       const { data: rel } = await sb0
-        .from('agency_clients').select('client_id')
+        .from('agency_handlers').select('client_id')
         .eq('agency_id', userId).eq('client_id', clientId).maybeSingle()
       if (!rel) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
