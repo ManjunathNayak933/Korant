@@ -8,3 +8,12 @@ binding = "METRICS_CACHE"
 id = "58fcc92a0626419e884d3b7ccac19d1e"
 # To create: wrangler kv:namespace create METRICS_CACHE
 # Then paste the returned id above
+
+# Tier B: producer binding for the pageview/purchase event queue. The beacon
+# enqueues here; the separate korant-event-consumer Worker drains it. Pages
+# can PRODUCE to a queue but cannot CONSUME — that's why the consumer is its
+# own Worker. If this binding is absent, beacon falls back to direct writes.
+# Create the queue once with: wrangler queues create korant-track-events
+[[queues.producers]]
+binding = "TRACK_QUEUE"
+queue = "korant-track-events"
