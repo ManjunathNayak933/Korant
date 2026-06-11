@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getRequestContext } from '@cloudflare/next-on-pages'
 import { getVisitorCookie, detectEntrySource } from '@/lib/visitor'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { enqueueEvent, writeEventDirect, type TrackEvent } from '@/lib/event-queue'
+import { enqueueEvent, writeEventDirect, isVisitorKnown, type TrackEvent } from '@/lib/event-queue'
 
 // CORS — this endpoint is called from the client's own store domain
 function corsHeaders(req: NextRequest) {
