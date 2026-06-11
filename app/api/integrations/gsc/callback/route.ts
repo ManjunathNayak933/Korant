@@ -2,14 +2,22 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { verifyOAuthState, buildClearOAuthStateCookie } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')
-  const clientId = searchParams.get('state')
+  const state = searchParams.get('state')
+
+  // CSRF: the clientId comes from the *verified* signed state, matched against
+  // the httpOnly nonce cookie — never from an attacker-controllable raw param.
+  const cookieNonce = request.cookies.get('mk_oauth_state')?.value || null
+  const clientId = await verifyOAuthState(state, cookieNonce)
 
   if (!code || !clientId) {
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=error`)
+    const res = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=error`)
+    res.headers.set('Set-Cookie', buildClearOAuthStateCookie())
+    return res
   }
 
   const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/integrations/gsc/callback`
@@ -26,7 +34,9 @@ export async function GET(request: NextRequest) {
   })
 
   if (!tokenRes.ok) {
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=error`)
+    const res = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=error`)
+    res.headers.set('Set-Cookie', buildClearOAuthStateCookie())
+    return res
   }
 
   const tokens = await tokenRes.json()
@@ -41,5 +51,7 @@ export async function GET(request: NextRequest) {
     updated_at: new Date().toISOString(),
   }, { onConflict: 'client_id' })
 
-  return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=connected&tab=search`)
+  const res = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/dashboard?gsc=connected&tab=search`)
+  res.headers.set('Set-Cookie', buildClearOAuthStateCookie())
+  return res
 }
