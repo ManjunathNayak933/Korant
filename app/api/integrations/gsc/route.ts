@@ -1,6 +1,7 @@
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
+import { signOAuthState } from '@/lib/auth'
 
 export async function GET(request: NextRequest) {
   const userId = request.headers.get('x-user-id')!
@@ -10,6 +11,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/integrations/gsc/callback`
+
+  // CSRF-safe state: signed JWT (clientId + random nonce), nonce mirrored in an
+  // httpOnly cookie and verified on callback. Replaces the old raw clientId.
+  const { state, cookie } = await signOAuthState(clientId)
+
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     redirect_uri: redirectUri,
@@ -17,8 +23,10 @@ export async function GET(request: NextRequest) {
     scope: 'https://www.googleapis.com/auth/webmasters.readonly',
     access_type: 'offline',
     prompt: 'consent',
-    state: clientId,
+    state,
   })
 
-  return NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+  const res = NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+  res.headers.set('Set-Cookie', cookie)
+  return res
 }
