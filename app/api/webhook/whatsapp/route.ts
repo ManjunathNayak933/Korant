@@ -17,9 +17,37 @@ export async function GET(request: NextRequest) {
   return new NextResponse('Forbidden', { status: 403 })
 }
 
+// Verifies Meta's X-Hub-Signature-256 header: 'sha256=' + HMAC-SHA256(rawBody, APP_SECRET).
+async function verifyMetaSignature(rawBody: string, header: string, appSecret: string): Promise<boolean> {
+  const expectedPrefix = 'sha256='
+  if (!header.startsWith(expectedPrefix)) return false
+  const sigHex = header.slice(expectedPrefix.length)
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey('raw', enc.encode(appSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = await crypto.subtle.sign('HMAC', key, enc.encode(rawBody))
+  const computed = Array.from(new Uint8Array(mac)).map(b => b.toString(16).padStart(2, '0')).join('')
+  // constant-time-ish compare
+  if (computed.length !== sigHex.length) return false
+  let ok = true
+  for (let i = 0; i < computed.length; i++) if (computed[i] !== sigHex[i]) ok = false
+  return ok
+}
+
 // Delivery / read status updates (POST)
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null)
+  const rawBody = await request.text()
+
+  // Verify the payload is really from Meta. Fail closed when a secret is set.
+  // (WHATSAPP_APP_SECRET is the Meta App Secret used to sign webhooks.)
+  const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || ''
+  if (appSecret) {
+    const sigHeader = request.headers.get('x-hub-signature-256') || ''
+    const valid = await verifyMetaSignature(rawBody, sigHeader, appSecret)
+    if (!valid) return new NextResponse('Invalid signature', { status: 401 })
+  }
+
+  let body: any = null
+  try { body = JSON.parse(rawBody) } catch { /* ignore */ }
   if (!body) return NextResponse.json({ ok: true })
 
   const sb = getSupabaseAdmin()
