@@ -63,16 +63,52 @@ async function verifyPasswordCrypto(password: string, stored: string): Promise<b
 }
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
+// Backed by Cloudflare KV (METRICS_CACHE) so the limit is GLOBAL across edge
+// isolates. The old module-level Map only limited within a single isolate, so
+// an attacker hitting different POPs/isolates bypassed it. Falls back to an
+// in-memory Map for local dev (no KV binding).
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
 
-export function checkRateLimit(key: string): boolean {
+const RATE_LIMIT_MAX = 10
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
+
+function getRateLimitKV(): any | null {
+  try { return (globalThis as any).METRICS_CACHE ?? null } catch { return null }
+}
+
+export async function checkRateLimit(key: string): Promise<boolean> {
   const now = Date.now()
+  const kv = getRateLimitKV()
+
+  if (kv) {
+    const kvKey = `rl:${key}`
+    try {
+      const raw = await kv.get(kvKey)
+      const entry = raw ? JSON.parse(raw) as { count: number; resetAt: number } : null
+      if (!entry || now > entry.resetAt) {
+        const resetAt = now + RATE_LIMIT_WINDOW_MS
+        await kv.put(kvKey, JSON.stringify({ count: 1, resetAt }), { expirationTtl: Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) })
+        return true
+      }
+      if (entry.count >= RATE_LIMIT_MAX) return false
+      entry.count++
+      // Keep the original window expiry; recompute TTL from remaining time.
+      const ttl = Math.max(1, Math.ceil((entry.resetAt - now) / 1000))
+      await kv.put(kvKey, JSON.stringify(entry), { expirationTtl: ttl })
+      return true
+    } catch {
+      // KV hiccup — fail open rather than lock everyone out.
+      return true
+    }
+  }
+
+  // Local dev fallback (single isolate).
   const entry = rateLimitMap.get(key)
   if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 })
+    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
     return true
   }
-  if (entry.count >= 10) return false
+  if (entry.count >= RATE_LIMIT_MAX) return false
   entry.count++
   return true
 }
@@ -185,4 +221,49 @@ export async function loginUser(
 // ── Hash (for creating accounts) ─────────────────────────────────────────────
 export async function hashPassword(password: string): Promise<string> {
   return hashPasswordCrypto(password)
+}
+
+// ── OAuth state (CSRF protection for GSC / external OAuth) ────────────────────
+// The `state` param must be an unguessable, single-use value bound to the
+// logged-in client. We sign a short-lived JWT containing the clientId plus a
+// random nonce, send it as `state`, and also drop the nonce in an httpOnly
+// cookie. On callback we verify the signature AND that the cookie nonce
+// matches — so a forged callback (attacker-chosen state) is rejected.
+
+const OAUTH_STATE_COOKIE = 'mk_oauth_state'
+
+export async function signOAuthState(clientId: string): Promise<{ state: string; cookie: string }> {
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map(b => b.toString(16).padStart(2, '0')).join('')
+  const state = await new SignJWT({ clientId, nonce, purpose: 'gsc_oauth' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('10m')
+    .sign(JWT_SECRET)
+  // 10-minute httpOnly cookie carrying the nonce for cross-request verification.
+  const cookie = `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax; Secure`
+  return { state, cookie }
+}
+
+// Verifies the signed state and matches it against the cookie nonce.
+// Returns the clientId on success, or null if anything fails (tampered state,
+// expired, wrong purpose, or nonce mismatch / missing cookie).
+export async function verifyOAuthState(
+  state: string | null,
+  cookieNonce: string | null
+): Promise<string | null> {
+  if (!state || !cookieNonce) return null
+  try {
+    const { payload } = await jwtVerify(state, JWT_SECRET)
+    const p = payload as any
+    if (p.purpose !== 'gsc_oauth') return null
+    if (p.nonce !== cookieNonce) return null
+    return typeof p.clientId === 'string' ? p.clientId : null
+  } catch {
+    return null
+  }
+}
+
+export function buildClearOAuthStateCookie(): string {
+  return `${OAUTH_STATE_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
 }
