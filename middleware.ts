@@ -6,6 +6,13 @@ export const config = {
   matcher: ['/((?!_next/static|_next/image|_next/data|favicon.ico|india-map.png).*)'],
 }
 
+// Hard-fail in production if the signing secret is missing. Middleware gates
+// every route, so silently using a fallback secret here would be a critical
+// auth bypass. (lib/auth.ts has the same guard for the login path.)
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET must be set in production')
+}
+
 const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'fallback-secret-change-in-production-32chars'
 )
@@ -27,14 +34,29 @@ function isPublic(path: string): boolean {
   return PUBLIC_PATHS.some((p) => path.startsWith(p))
 }
 
+// Defense in depth: clients must never be able to supply their own identity
+// headers. We strip any inbound x-user-* on EVERY request (including public
+// early-returns) so the only x-user-* a route can ever see is one this
+// middleware set from a verified JWT.
+function stripIdentityHeaders(req: NextRequest): Headers {
+  const h = new Headers(req.headers)
+  h.delete('x-user-id')
+  h.delete('x-user-role')
+  h.delete('x-user-email')
+  return h
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Always pass through Next.js internals
-  if (pathname.startsWith('/_next/')) return NextResponse.next()
+  const sanitizedHeaders = stripIdentityHeaders(request)
+  const passThrough = () => NextResponse.next({ request: { headers: sanitizedHeaders } })
 
-  // Allow public paths
-  if (isPublic(pathname)) return NextResponse.next()
+  // Always pass through Next.js internals
+  if (pathname.startsWith('/_next/')) return passThrough()
+
+  // Allow public paths (with identity headers stripped)
+  if (isPublic(pathname)) return passThrough()
 
   // Allow OPTIONS preflight + POST to signup-requests without auth (CORS for app.microkorant.in)
   if (pathname === '/api/signup-requests' || pathname.startsWith('/api/signup-requests')) {
@@ -48,7 +70,7 @@ export async function middleware(request: NextRequest) {
           'Access-Control-Allow-Headers': 'Content-Type',
         }})
       }
-      const res = NextResponse.next()
+      const res = NextResponse.next({ request: { headers: sanitizedHeaders } })
       res.headers.set('Access-Control-Allow-Origin', allowed)
       return res
     }
@@ -105,11 +127,11 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Inject user info in headers for API routes
-  const requestHeaders = new Headers(request.headers)
-  requestHeaders.set('x-user-id', clientId)
-  requestHeaders.set('x-user-role', role)
-  requestHeaders.set('x-user-email', payload.email || '')
+  // Inject user info in headers for API routes (onto the sanitized header set,
+  // so any client-supplied x-user-* was already removed above).
+  sanitizedHeaders.set('x-user-id', clientId)
+  sanitizedHeaders.set('x-user-role', role)
+  sanitizedHeaders.set('x-user-email', payload.email || '')
 
-  return NextResponse.next({ request: { headers: requestHeaders } })
+  return NextResponse.next({ request: { headers: sanitizedHeaders } })
 }
