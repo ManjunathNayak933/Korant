@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from './supabase'
 
-const META_VERSION = 'v22.0'
+const META_VERSION = 'v25.0'
 const META_BASE = `https://graph.facebook.com/${META_VERSION}`
 
 export interface WAConfig {
@@ -198,15 +198,24 @@ export async function sendTemplateMessage(
 }
 
 // ── Estimate cost ──────────────────────────────────────────────────────────
-
-export function estimateCost(contactCount: number): { inr: number; conversations: number } {
-  // India rate: ~₹0.69 per marketing conversation (24h window)
-  const RATE_INR = 0.69
-  const FREE_TIER = 1000
-  const billable = Math.max(0, contactCount - FREE_TIER)
+// Meta switched WhatsApp billing in July 2025 from per-24h-conversation to
+// PER DELIVERED TEMPLATE MESSAGE. The old "first 1000 conversations free /
+// ₹0.69 per conversation" model no longer applies to marketing. We now bill
+// per message at the India marketing template rate. The free entry-point /
+// service-conversation allowances are separate and not modelled here.
+//
+// NOTE: the per-message rate changes by country and over time — keep
+// MARKETING_RATE_INR aligned with Meta's current rate card before relying on
+// this for client-facing quotes.
+export function estimateCost(
+  contactCount: number
+): { inr: number; messages: number; conversations: number } {
+  const MARKETING_RATE_INR = 0.78 // approx India marketing per-message rate; verify vs current Meta rate card
+  const messages = contactCount   // one template message per contact
   return {
-    inr: Math.round(billable * RATE_INR),
-    conversations: contactCount,
+    inr: Math.round(messages * MARKETING_RATE_INR * 100) / 100,
+    messages,
+    conversations: contactCount, // kept for backward compatibility with existing callers
   }
 }
 
