@@ -37,14 +37,18 @@ async function verifyMetaSignature(rawBody: string, header: string, appSecret: s
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
 
-  // Verify the payload is really from Meta. Fail closed when a secret is set.
-  // (WHATSAPP_APP_SECRET is the Meta App Secret used to sign webhooks.)
+  // Verify the payload is really from Meta. FAIL CLOSED: if no app secret is
+  // configured we cannot authenticate the request, so we reject it (previously
+  // this fell through and processed unsigned requests). Set WHATSAPP_APP_SECRET
+  // (the Meta App Secret) to enable status webhooks.
   const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || ''
-  if (appSecret) {
-    const sigHeader = request.headers.get('x-hub-signature-256') || ''
-    const valid = await verifyMetaSignature(rawBody, sigHeader, appSecret)
-    if (!valid) return new NextResponse('Invalid signature', { status: 401 })
+  if (!appSecret) {
+    console.error('[whatsapp webhook] rejected: WHATSAPP_APP_SECRET / META_APP_SECRET not configured')
+    return new NextResponse('Webhook secret not configured', { status: 401 })
   }
+  const sigHeader = request.headers.get('x-hub-signature-256') || ''
+  const valid = await verifyMetaSignature(rawBody, sigHeader, appSecret)
+  if (!valid) return new NextResponse('Invalid signature', { status: 401 })
 
   let body: any = null
   try { body = JSON.parse(rawBody) } catch { /* ignore */ }
