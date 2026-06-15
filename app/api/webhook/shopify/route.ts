@@ -4,65 +4,77 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
 
-export async function POST(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const clientId = searchParams.get('clientId')
-  if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+async function verifyShopifyHmac(body: string, hmacHeader: string, secret: string): Promise<boolean> {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'])
+  const signatureBytes = Uint8Array.from(atob(hmacHeader), c => c.charCodeAt(0))
+  return crypto.subtle.verify('HMAC', key, signatureBytes, encoder.encode(body))
+}
 
+export async function POST(request: NextRequest) {
   const body = await request.text()
+  // Accept both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 format (API 2026-01+)
+  const hmacHeader = request.headers.get('x-shopify-hmac-sha256') || request.headers.get('shopify-hmac-sha256') || ''
+  const shopifyDomain = request.headers.get('x-shopify-shop-domain') || ''
+  const topic = request.headers.get('x-shopify-topic') || ''
+
   const sb = getSupabaseAdmin()
 
-  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).single()
-  if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+  // Find client by shopify domain
+  const { data: client } = await sb
+    .from('clients')
+    .select('id, webhook_secret')
+    .eq('shopify_domain', shopifyDomain)
+    .single()
 
-  // Verify Razorpay's real signature: HMAC-SHA256(rawBody, webhook_secret) as hex,
-  // delivered in the X-Razorpay-Signature header. Fail closed if no secret set.
+  if (!client) {
+    return NextResponse.json({ error: 'Unknown shop domain' }, { status: 404 })
+  }
+
+  // Verify HMAC — fail closed: a live client MUST have a webhook_secret set.
   if (!client.webhook_secret) {
     return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
   }
-  const sigHeader = request.headers.get('x-razorpay-signature') || ''
-  const enc = new TextEncoder()
-  const key = await crypto.subtle.importKey('raw', enc.encode(client.webhook_secret),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  const sigBytes = await crypto.subtle.sign('HMAC', key, enc.encode(body))
-  const computed = Array.from(new Uint8Array(sigBytes)).map(b => b.toString(16).padStart(2, '0')).join('')
-  // constant-time-ish compare
-  let ok = computed.length === sigHeader.length
-  for (let i = 0; i < computed.length && i < sigHeader.length; i++) {
-    if (computed[i] !== sigHeader[i]) ok = false
-  }
-  if (!ok) return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  const valid = await verifyShopifyHmac(body, hmacHeader, client.webhook_secret)
+  if (!valid) return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
 
-  let payload: any
-  try { payload = JSON.parse(body) } catch {
+  let order: any
+  try {
+    order = JSON.parse(body)
+  } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Refund / reversal: Razorpay sends refund.created / refund.processed with the
-  // original payment id (which we stored as the event's order_id). Reverse it.
-  if (payload.event === 'refund.created' || payload.event === 'refund.processed') {
-    const paymentId = payload.payload?.refund?.entity?.payment_id
-    if (!paymentId) return NextResponse.json({ received: true, skipped: true })
-    const r = await reverseSale({ clientId, orderId: String(paymentId), platform: 'razorpay', reason: 'refund' })
+  // Refund / cancellation → reverse the original attribution.
+  //  - refunds/create: payload is a Refund; the order id is `order_id`
+  //    (partial refunds reverse the whole commission for that order — see docs).
+  //  - orders/cancelled: payload is an Order; the order id is `id`.
+  if (topic === 'refunds/create') {
+    const orderId = String(order.order_id ?? order.order?.id ?? '')
+    const r = await reverseSale({ clientId: client.id, orderId, platform: 'shopify', reason: 'refund' })
+    return NextResponse.json({ received: true, reversed: r.reversed })
+  }
+  if (topic === 'orders/cancelled') {
+    const orderId = String(order.id ?? '')
+    const r = await reverseSale({ clientId: client.id, orderId, platform: 'shopify', reason: 'cancelled' })
     return NextResponse.json({ received: true, reversed: r.reversed })
   }
 
-  if (payload.event !== 'payment.captured') {
-    return NextResponse.json({ received: true, skipped: true })
+  const discountCode = order.discount_codes?.[0]?.code || null
+  const noteAttributes: Record<string, string> = {}
+  for (const attr of (order.note_attributes || [])) {
+    noteAttributes[attr.name] = attr.value
   }
 
-  const payment = payload.payload?.payment?.entity || {}
-  const notes = payment.notes || {}
-
   const result = await attributeSale({
-    clientId,
-    orderValue: (payment.amount || 0) / 100, // Razorpay amounts are in paise
-    orderId: payment.id,
-    discountCode: notes.discount_code || undefined,
-    mkSlug: notes.mk_slug || undefined,
-    mkSlugFirst: notes.mk_slug_first || undefined,
-    platform: 'razorpay',
+    clientId: client.id,
+    orderValue: parseFloat(order.total_price || '0'),
+    orderId: String(order.id),
+    discountCode: discountCode || undefined,
+    mkSlug: noteAttributes['mk_slug'] || undefined,
+    mkSlugFirst: noteAttributes['mk_slug_first'] || undefined,
+    platform: 'shopify',
   })
 
-  return NextResponse.json({ received: true, attributed: result.attributed })
+  return NextResponse.json({ received: true, attributed: result.attributed, channel: result.channel })
 }
