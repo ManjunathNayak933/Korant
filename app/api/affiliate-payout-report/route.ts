@@ -28,6 +28,7 @@ export async function GET(request: NextRequest) {
     .select('affiliate_id, order_value, commission_amount, timestamp')
     .eq('client_id', clientId)
     .not('affiliate_id', 'is', null)
+    .is('reversed_at', null) // exclude refunded / cancelled sales
     .gte('timestamp', monthStart)
     .lt('timestamp', monthEnd)
 
