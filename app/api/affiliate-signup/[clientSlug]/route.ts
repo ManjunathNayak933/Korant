@@ -4,33 +4,50 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { ensureUniqueSlug } from '@/lib/tracking'
 
-export async function GET(request: NextRequest, { params }: { params: Promise<{ clientSlug: string }> }) {
+// Look up a client by their public affiliate slug.
+async function getClientBySlug(clientSlug: string) {
   const sb = getSupabaseAdmin()
-  const { data: client } = await sb
+  const { data } = await sb
     .from('clients')
-    .select('id, name, affiliate_slug')
-    .eq('affiliate_slug', (await params).clientSlug)
+    .select('id, name, affiliate_slug, destination_url')
+    .eq('affiliate_slug', clientSlug)
     .single()
+  return data
+}
 
-  if (!client) return NextResponse.json({ error: 'Program not found' }, { status: 404 })
-
-  const { data: program } = await sb
+// All active, public programs for a client (newest first).
+async function getPublicPrograms(clientId: string) {
+  const sb = getSupabaseAdmin()
+  const { data } = await sb
     .from('affiliate_programs')
     .select('id, name, description, commission_type, commission_value, commission_trigger, attribution_window_days')
-    .eq('client_id', client.id)
+    .eq('client_id', clientId)
     .eq('is_public', true)
     .eq('is_active', true)
     .order('created_at', { ascending: false })
-    .limit(1)
-    .single()
+  return data || []
+}
+
+export async function GET(request: NextRequest, { params }: { params: Promise<{ clientSlug: string }> }) {
+  const { clientSlug } = await params
+  const programId = new URL(request.url).searchParams.get('program')
+
+  const client = await getClientBySlug(clientSlug)
+  if (!client) return NextResponse.json({ error: 'Program not found' }, { status: 404 })
+
+  const allPrograms = await getPublicPrograms(client.id)
+  // Pick the requested program if valid, otherwise default to the newest.
+  const program = programId
+    ? allPrograms.find((p: any) => p.id === programId) || null
+    : allPrograms[0] || null
 
   if (!program) return NextResponse.json({ error: 'No active public program' }, { status: 404 })
 
-  return NextResponse.json({ client: { name: client.name }, program })
+  return NextResponse.json({ client: { name: client.name }, program, allPrograms })
 }
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ clientSlug: string }> }) {
-  const sb = getSupabaseAdmin()
+  const { clientSlug } = await params
   const body = await request.json()
 
   const { name, email, handle } = body
@@ -38,27 +55,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: 'name, email, handle required' }, { status: 400 })
   }
 
-  const { data: client } = await sb
-    .from('clients')
-    .select('id, name')
-    .eq('affiliate_slug', (await params).clientSlug)
-    .single()
-
+  const client = await getClientBySlug(clientSlug)
   if (!client) return NextResponse.json({ error: 'Program not found' }, { status: 404 })
 
-  const { data: program } = await sb
-    .from('affiliate_programs')
-    .select('*')
-    .eq('client_id', client.id)
-    .eq('is_public', true)
-    .eq('is_active', true)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single()
+  // Resolve the target program: a specific one if requested+valid, else the newest public one.
+  const allPrograms = await getPublicPrograms(client.id)
+  const program = body.program_id
+    ? allPrograms.find((p: any) => p.id === body.program_id) || null
+    : allPrograms[0] || null
 
   if (!program) return NextResponse.json({ error: 'No active public program' }, { status: 404 })
 
-  // Idempotent — check existing
+  const sb = getSupabaseAdmin()
+
+  // Idempotent — if this email already joined this program, return their existing details.
   const { data: existing } = await sb
     .from('affiliates')
     .select('id, name, redirect_slug, discount_code')
@@ -76,7 +86,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
   }
 
-  // New signup
+  // New signup — fall back to the client's own destination_url, never a hardcoded domain.
   const slugBase = handle.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
   const redirect_slug = await ensureUniqueSlug(`aff-${slugBase}`)
   const randomSuffix = Math.floor(Math.random() * 90 + 10)
@@ -93,7 +103,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       email: email.toLowerCase(),
       phone: body.phone || null,
       redirect_slug,
-      destination_url: body.destination_url || 'https://www.microkorant.in',
+      destination_url: body.destination_url || client.destination_url,
       discount_code,
       commission_type: program.commission_type,
       commission_value: program.commission_value,
