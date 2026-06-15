@@ -14,8 +14,14 @@ export async function GET(request: NextRequest) {
   if (role === 'client' && clientId !== userId) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
+  // Use a half-open range [monthStart, monthEnd) computed from the calendar,
+  // not a hardcoded "-31" (which is an invalid date for Feb/30-day months and
+  // also drops the last day's events on 31-day months). Mirrors the boundary
+  // logic used in analytics/payouts routes.
   const monthStart = month ? `${month}-01` : '2020-01-01'
-  const monthEnd = month ? `${month}-31` : '2099-12-31'
+  const monthEnd = month
+    ? (() => { const d = new Date(`${month}-01T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + 1); return d.toISOString().slice(0, 10) })()
+    : '2099-12-31'
 
   const { data: events } = await sb
     .from('events')
@@ -23,7 +29,7 @@ export async function GET(request: NextRequest) {
     .eq('client_id', clientId)
     .not('affiliate_id', 'is', null)
     .gte('timestamp', monthStart)
-    .lte('timestamp', monthEnd)
+    .lt('timestamp', monthEnd)
 
   const { data: affiliates } = await sb
     .from('affiliates')
