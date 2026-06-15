@@ -100,6 +100,99 @@ function ProgramModal({ clientId, existing, onClose, onSaved }: { clientId: stri
   )
 }
 
+// ── Program Analytics Modal ─────────────────────────────────────────────────
+// Program-wide rollup computed from the per-affiliate stats already loaded for
+// the selected month — no extra fetch, and consistent with the rest of the tab.
+function ProgramAnalyticsModal({ program, affiliates, statsById, month, onClose }: {
+  program: Program
+  affiliates: Affiliate[]
+  statsById: Record<string, AffStats>
+  month?: string
+  onClose: () => void
+}) {
+  const members = affiliates.filter(a => a.program_id === program.id)
+  const active  = members.filter(a => a.is_active).length
+  const paused  = members.length - active
+
+  const tot = members.reduce((acc, a) => {
+    const s = statsById[a.id] || { clicks: 0, sales: 0, revenue: 0, commission: 0 }
+    acc.clicks += s.clicks; acc.sales += s.sales; acc.revenue += s.revenue; acc.commission += s.commission
+    return acc
+  }, { clicks: 0, sales: 0, revenue: 0, commission: 0 })
+
+  const convRate    = tot.clicks > 0 ? (tot.sales / tot.clicks * 100) : 0
+  const commPct     = tot.revenue > 0 ? (tot.commission / tot.revenue * 100) : 0
+  const avgOrder    = tot.sales > 0 ? (tot.revenue / tot.sales) : 0
+  const activeEarners = members.filter(a => (statsById[a.id]?.sales || 0) > 0).length
+
+  const ranked = [...members]
+    .map(a => ({ a, s: statsById[a.id] || { clicks: 0, sales: 0, revenue: 0, commission: 0 } }))
+    .sort((x, y) => y.s.revenue - x.s.revenue)
+
+  const monthLabel = month
+    ? new Date(`${month}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    : 'All time'
+
+  const kpi = (label: string, value: string | number, color = 'var(--text-primary)') => (
+    <div key={label} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
+      <div style={{ fontSize: 17, fontWeight: 500, color }}>{value}</div>
+      <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px', marginTop: 2 }}>{label}</div>
+    </div>
+  )
+
+  const maxRev = Math.max(1, ...ranked.map(r => r.s.revenue))
+
+  return (
+    <Modal title={`${program.name} — analytics`} onClose={onClose}>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12 }}>
+        {monthLabel} · {program.commission_value}{program.commission_type === 'percentage' ? '%' : '₹'} per {program.commission_trigger.replace('_', ' ')} · {program.attribution_window_days}d window
+      </div>
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 8 }}>Roster</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 16 }}>
+        {kpi('Affiliates', members.length)}
+        {kpi('Active', active, 'var(--green)')}
+        {kpi('Paused', paused, 'var(--amber)')}
+      </div>
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 8 }}>Performance</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 16 }}>
+        {kpi('Clicks', tot.clicks)}
+        {kpi('Sales', tot.sales)}
+        {kpi('Revenue', `₹${tot.revenue.toLocaleString('en-IN')}`)}
+        {kpi('Commission', `₹${tot.commission.toFixed(0)}`, 'var(--green)')}
+        {kpi('Conv rate', `${convRate.toFixed(1)}%`)}
+        {kpi('Comm / rev', `${commPct.toFixed(1)}%`, 'var(--amber)')}
+        {kpi('Avg order', `₹${avgOrder.toFixed(0)}`)}
+        {kpi('Earning affiliates', `${activeEarners}/${members.length}`)}
+      </div>
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 8 }}>Affiliates by revenue</div>
+      {ranked.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-dim)', padding: '8px 0' }}>No affiliates in this program yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {ranked.map(({ a, s }, i) => (
+            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', width: 16, textAlign: 'right' }}>{i + 1}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name} <span style={{ color: 'var(--text-dim)' }}>{a.handle}</span></span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, marginLeft: 8 }}>₹{s.revenue.toLocaleString('en-IN')} · {s.sales} sales · ₹{s.commission.toFixed(0)} comm</span>
+                </div>
+                <div style={{ height: 5, background: 'var(--surface2)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${(s.revenue / maxRev) * 100}%`, height: '100%', background: a.is_active ? 'var(--green)' : 'var(--text-dim)', borderRadius: 3 }} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 14 }}>Figures reflect {monthLabel.toLowerCase()} and exclude refunded/cancelled sales.</div>
+    </Modal>
+  )
+}
+
 // ── Edit Affiliate Modal ────────────────────────────────────────────────────
 function EditAffiliateModal({ affiliate, programs, campaigns, onClose, onSaved }: { affiliate: Affiliate; programs: Program[]; campaigns: { id: string; name: string }[]; onClose: () => void; onSaved: (a: Affiliate) => void }) {
   const [form, setForm] = useState({
@@ -203,6 +296,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
   const [pauseModal, setPauseModal]       = useState<Affiliate | null>(null)
   const [deleteAffModal, setDeleteAffModal] = useState<Affiliate | null>(null)
   const [deleteProgModal, setDeleteProgModal] = useState<Program | null>(null)
+  const [analyticsProgram, setAnalyticsProgram] = useState<Program | null>(null)
   const [pauseReason, setPauseReason]     = useState('')
   const [copied, setCopied]               = useState<string | null>(null)
   const [statusFilter, setStatusFilter]   = useState('all')
@@ -487,6 +581,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
                         {prog.description && <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>{prog.description}</div>}
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button onClick={() => setAnalyticsProgram(prog)} style={{ border: '0.5px solid var(--green)', color: 'var(--green)', background: 'transparent', borderRadius: 5, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Analytics</button>
                         <button onClick={() => setEditProgram(prog)} style={{ border: '0.5px solid var(--border2)', color: 'var(--text-muted)', background: 'transparent', borderRadius: 5, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>Edit</button>
                         <button onClick={async () => {
                           await fetch(`/api/affiliate-programs/${prog.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_public: !prog.is_public }) })
@@ -532,6 +627,7 @@ export default function AffiliateDashboard({ clientId, campaigns, baseUrl, month
               })}
               {showNewProgram && <ProgramModal clientId={clientId} onClose={() => setShowNewProgram(false)} onSaved={p => setPrograms(prev => [p, ...prev])} />}
               {editProgram   && <ProgramModal clientId={clientId} existing={editProgram} onClose={() => setEditProgram(null)} onSaved={p => setPrograms(prev => prev.map(x => x.id === p.id ? p : x))} />}
+              {analyticsProgram && <ProgramAnalyticsModal program={analyticsProgram} affiliates={affiliates} statsById={affStats} month={month} onClose={() => setAnalyticsProgram(null)} />}
             </div>
           )}
 
