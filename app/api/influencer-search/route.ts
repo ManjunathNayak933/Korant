@@ -11,9 +11,18 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
   const userId   = req.headers.get('x-user-id')
+  const role     = req.headers.get('x-user-role')
   const { searchParams } = new URL(req.url)
   const raw      = searchParams.get('handle') || ''
-  const clientId = searchParams.get('clientId') || userId || ''
+  const requestedClientId = searchParams.get('clientId')
+
+  // A client may only ever search within their own data. Admin/agency may pass
+  // an explicit clientId. Without this, a logged-in client could supply another
+  // brand's id and read that brand's influencer roster + audience overlaps.
+  if (role === 'client' && requestedClientId && requestedClientId !== userId) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+  const clientId = role === 'client' ? (userId || '') : (requestedClientId || userId || '')
 
   if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
 
