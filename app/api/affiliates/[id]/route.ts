@@ -37,7 +37,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const sb = getSupabaseAdmin()
   const body = await request.json()
-  const allowed = ['name', 'handle', 'email', 'phone', 'destination_url', 'discount_code', 'is_active', 'paused_reason', 'campaign_id', 'commission_type', 'commission_value']
+  const allowed = ['name', 'handle', 'email', 'phone', 'destination_url', 'discount_code', 'is_active', 'paused_reason', 'campaign_id', 'program_id', 'commission_type', 'commission_value']
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
   for (const key of allowed) {
     if (key in body) updates[key] = body[key]
