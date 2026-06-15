@@ -58,6 +58,7 @@ export async function POST(req: NextRequest) {
     .eq('affiliate_id', affiliateId)
     .eq('client_id',    clientId)
     .in('type', ['code_sale', 'cookie_sale'])
+    .is('reversed_at', null) // exclude refunded / cancelled sales
     .gte('timestamp', periodStart)
     .lte('timestamp', `${periodEnd}T23:59:59.999Z`)
 
