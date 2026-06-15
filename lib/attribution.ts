@@ -38,14 +38,19 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
     if (entityType === 'influencer') q = q.eq('influencer_id', entityId)
     else if (entityType === 'affiliate') q = q.eq('affiliate_id', entityId)
     else if (entityType === 'publication') q = q.eq('publication_id', entityId)
-    const { data } = await q.single()
+    // maybeSingle: 0 rows → null (not an error). Avoids the noisy PGRST116 that
+    // .single() raises on the (common) no-duplicate path.
+    const { data } = await q.maybeSingle()
     return !!data
   }
 
+  // Returns the write status so callers never report success on a failed insert.
+  // A unique-violation (23505) means a concurrent delivery already inserted this
+  // exact (order_id, entity) row — that's a benign idempotent retry, not a failure.
   async function insertEvent(params: {
     entityType: string; entityId: string; campaignId?: string | null
     method: string; commission: number
-  }) {
+  }): Promise<{ ok: boolean; duplicate: boolean; error?: string }> {
     const base = {
       client_id: clientId,
       campaign_id: params.campaignId,
@@ -61,10 +66,15 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
     else if (params.entityType === 'affiliate') Object.assign(base, { affiliate_id: params.entityId, type: discountCode ? 'code_sale' : 'cookie_sale' })
     else if (params.entityType === 'publication') Object.assign(base, { publication_id: params.entityId, type: 'cookie_sale' })
 
-    try {
-      await sb.from('events').insert(base)
-      await invalidateClientMetrics(clientId).catch(() => {})
-    } catch {}
+    // Supabase returns errors in `error`, it does NOT throw — so we must inspect it.
+    const { error } = await sb.from('events').insert(base)
+    if (error) {
+      if ((error as any).code === '23505') return { ok: true, duplicate: true }
+      console.error('[attributeSale] event insert failed', { clientId, orderId, platform, entityType: params.entityType, error: error.message })
+      return { ok: false, duplicate: false, error: error.message }
+    }
+    await invalidateClientMetrics(clientId).catch(() => {})
+    return { ok: true, duplicate: false }
   }
 
   // 1. Discount code → influencer
@@ -75,12 +85,14 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .eq('client_id', clientId)
       .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (inf) {
       if (await isDuplicate('influencer', inf.id)) return { attributed: false }
       const commission = 0
-      await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'code', commission })
+      const r = await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'code', commission })
+      if (!r.ok) return { attributed: false, error: r.error }
+      if (r.duplicate) return { attributed: false }
       return { attributed: true, channel: 'influencer', entityName: inf.name, method: 'code', commission, orderId }
     }
 
@@ -92,12 +104,14 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
       .eq('commission_trigger', 'per_sale')
-      .single()
+      .maybeSingle()
 
     if (aff) {
       if (await isDuplicate('affiliate', aff.id)) return { attributed: false }
       const commission = calcCommission(orderValue, aff.commission_type, aff.commission_value)
-      await insertEvent({ entityType: 'affiliate', entityId: aff.id, campaignId: aff.campaign_id, method: 'code', commission })
+      const r = await insertEvent({ entityType: 'affiliate', entityId: aff.id, campaignId: aff.campaign_id, method: 'code', commission })
+      if (!r.ok) return { attributed: false, error: r.error }
+      if (r.duplicate) return { attributed: false }
       return { attributed: true, channel: 'affiliate', entityName: aff.name, method: 'code', commission, orderId }
     }
   }
@@ -110,11 +124,13 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .eq('client_id', clientId)
       .eq('redirect_slug', mkSlug)
       .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (inf) {
       if (await isDuplicate('influencer', inf.id)) return { attributed: false }
-      await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'cookie', commission: 0 })
+      const r = await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'cookie', commission: 0 })
+      if (!r.ok) return { attributed: false, error: r.error }
+      if (r.duplicate) return { attributed: false }
       return { attributed: true, channel: 'influencer', entityName: inf.name, method: 'cookie', commission: 0, orderId }
     }
 
@@ -126,7 +142,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .eq('redirect_slug', mkSlug)
       .eq('is_active', true)
       .eq('commission_trigger', 'per_sale')
-      .single()
+      .maybeSingle()
 
     if (aff) {
       // Check attribution window
@@ -140,12 +156,14 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
         .gte('timestamp', windowStart)
         .order('timestamp', { ascending: false })
         .limit(1)
-        .single()
+        .maybeSingle()
 
       if (clickEvent) {
         if (await isDuplicate('affiliate', aff.id)) return { attributed: false }
         const commission = calcCommission(orderValue, aff.commission_type, aff.commission_value)
-        await insertEvent({ entityType: 'affiliate', entityId: aff.id, campaignId: aff.campaign_id, method: 'cookie', commission })
+        const r = await insertEvent({ entityType: 'affiliate', entityId: aff.id, campaignId: aff.campaign_id, method: 'cookie', commission })
+        if (!r.ok) return { attributed: false, error: r.error }
+        if (r.duplicate) return { attributed: false }
         return { attributed: true, channel: 'affiliate', entityName: aff.name, method: 'cookie', commission, orderId }
       }
     }
@@ -157,14 +175,72 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
       .eq('client_id', clientId)
       .eq('redirect_slug', mkSlug)
       .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (pub) {
       if (await isDuplicate('publication', pub.id)) return { attributed: false }
-      await insertEvent({ entityType: 'publication', entityId: pub.id, campaignId: pub.campaign_id, method: 'cookie', commission: 0 })
+      const r = await insertEvent({ entityType: 'publication', entityId: pub.id, campaignId: pub.campaign_id, method: 'cookie', commission: 0 })
+      if (!r.ok) return { attributed: false, error: r.error }
+      if (r.duplicate) return { attributed: false }
       return { attributed: true, channel: 'publication', entityName: pub.publication_name, method: 'cookie', commission: 0, orderId }
     }
   }
 
   return { attributed: false }
+}
+
+export interface ReversalResult {
+  reversed: number
+  orderId?: string
+  error?: string
+}
+
+/**
+ * Reverse a previously-attributed sale (refund or cancellation).
+ *
+ * Marks the matching sale event(s) as reversed rather than deleting them, so the
+ * original sale stays in the audit trail. Idempotent: a repeated refund webhook
+ * finds nothing left to reverse and no-ops. All-or-nothing — a partial refund
+ * reverses the whole commission for that order (see note in the PR/docs).
+ *
+ * NOTE: aggregations must exclude reversed rows (`reversed_at is null`). The
+ * raw-event aggregations in this repo are updated to do so; the external
+ * `partner_stats_monthly` view must be updated in the DB (see migration).
+ */
+export async function reverseSale(params: {
+  clientId: string; orderId?: string; platform?: string; reason?: string
+}): Promise<ReversalResult> {
+  const orderId = params.orderId && params.orderId.trim() ? params.orderId.trim() : undefined
+  if (!orderId) return { reversed: 0 }
+
+  const sb = getSupabaseAdmin()
+
+  // Only sale events that aren't already reversed.
+  const { data: rows, error: selErr } = await sb
+    .from('events')
+    .select('id')
+    .eq('client_id', params.clientId)
+    .eq('order_id', orderId)
+    .in('type', ['code_sale', 'cookie_sale'])
+    .is('reversed_at', null)
+
+  if (selErr) {
+    console.error('[reverseSale] lookup failed', { clientId: params.clientId, orderId, error: selErr.message })
+    return { reversed: 0, orderId, error: selErr.message }
+  }
+  if (!rows || rows.length === 0) return { reversed: 0, orderId }
+
+  const ids = rows.map((r: any) => r.id)
+  const { error: updErr } = await sb
+    .from('events')
+    .update({ reversed_at: new Date().toISOString(), reversal_reason: params.reason || 'refund' })
+    .in('id', ids)
+
+  if (updErr) {
+    console.error('[reverseSale] update failed', { clientId: params.clientId, orderId, error: updErr.message })
+    return { reversed: 0, orderId, error: updErr.message }
+  }
+
+  await invalidateClientMetrics(params.clientId).catch(() => {})
+  return { reversed: ids.length, orderId }
 }
