@@ -44,9 +44,18 @@ export async function GET(request: NextRequest) {
 
     const sb = getSupabaseAdmin()
 
-    const nm = new Date(month + '-01')
-    nm.setMonth(nm.getMonth() + 1)
-    const nextMonthStr = nm.toISOString().slice(0, 10)
+    // Compute the month window in a timezone-DETERMINISTIC way. The previous
+    // `new Date(month+'-01')` parsed as UTC but `.setMonth()` mutated in the
+    // runtime's LOCAL timezone — it only gave the right answer because Cloudflare
+    // runs in UTC. Date.UTC is explicit, so this can't silently shift if the
+    // runtime timezone ever changes.
+    //   NOTE (IST): this window is in UTC, matching the rollup's
+    //   to_char(timestamp,'YYYY-MM') (also UTC). A click at 02:00 IST on the 1st
+    //   is 20:30 UTC the previous day, so it falls in the previous month here too
+    //   — consistent, but shifted 5.5h from the merchant's wall clock. To bucket
+    //   by IST instead, this and record_click must change together (see notes).
+    const [mYear, mMon] = month.split('-').map(Number) // mMon is 1-based
+    const nextMonthStr = new Date(Date.UTC(mYear, mMon, 1)).toISOString().slice(0, 10)
 
     // ── 1. Pre-aggregated partner stats ────────────────────────────────────
     let statsQuery = sb
