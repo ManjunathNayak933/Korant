@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/planLimits.ts                                          │
+// │ Replace the existing file at <repo-root>/lib/planLimits.ts           │
+// └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 
 export const PLAN_LIMITS = {
@@ -39,8 +43,13 @@ export async function checkPlanLimit(
   return { allowed: true }
 }
 
-// Platform-wide data threshold check for Pro-only features
-const PLATFORM_MIN_INFLUENCERS = 10
+// Platform-wide data threshold check for Pro-only features.
+// BUG FIX: this used to count EVERY influencer row (>= 10). But the Center only
+// shows profiles with `meets_threshold = true` (>= 500 tracked clicks). So a brand
+// could clear the gate and then see an empty grid, with the friendly "this grows
+// with scale" message no longer showing. We now count only profiles that would
+// actually be displayed, so the gate and the grid agree.
+const PLATFORM_MIN_PROFILES = 10
 
 export async function isProClient(clientId: string): Promise<boolean> {
   const sb = getSupabaseAdmin()
@@ -54,8 +63,12 @@ export async function isProClient(clientId: string): Promise<boolean> {
 
 export async function platformHasEnoughData(): Promise<boolean> {
   const sb = getSupabaseAdmin()
-  const { count } = await sb
-    .from('influencers')
-    .select('id', { count: 'exact', head: true })
-  return (count || 0) >= PLATFORM_MIN_INFLUENCERS
+  const { count, error } = await sb
+    .from('influencer_center')
+    .select('handle', { count: 'exact', head: true })
+    .eq('meets_threshold', true)
+  // If the view is unavailable for any reason, fail safe to "not enough data"
+  // (shows the encouraging empty-state rather than a broken/empty grid).
+  if (error) return false
+  return (count || 0) >= PLATFORM_MIN_PROFILES
 }
