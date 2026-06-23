@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/whatsapp/campaigns/route.ts                        │
+// │ Replace the existing file at <repo-root>/app/api/whatsapp/campaigns/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
@@ -15,9 +19,14 @@ export async function GET(request: NextRequest) {
   const sb = getSupabaseAdmin()
   let query = sb.from('whatsapp_campaigns').select('*').eq('client_id', userId).order('created_at', { ascending: false })
   if (month) {
-    const nextMonth = new Date(month + '-01')
-    nextMonth.setMonth(nextMonth.getMonth() + 1)
-    query = query.gte('created_at', `${month}-01`).lt('created_at', nextMonth.toISOString().slice(0,10))
+    // BUG FIX: created_at is timestamptz; bucket the month window in IST (half-open)
+    // so it agrees with the IST dashboard, instead of the old UTC + mutate-in-place
+    // `setMonth` which both shifts the boundary and is fragile across runtimes.
+    const [my, mm]      = month.split('-').map(Number) // mm 1-based
+    const nextMonthDate = new Date(Date.UTC(my, mm, 1)).toISOString().slice(0, 10)
+    const startInstant  = new Date(`${month}-01T00:00:00+05:30`).toISOString()
+    const endInstant    = new Date(`${nextMonthDate}T00:00:00+05:30`).toISOString()
+    query = query.gte('created_at', startInstant).lt('created_at', endInstant)
   }
   const { data, error } = await query
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
