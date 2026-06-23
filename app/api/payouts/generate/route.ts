@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/payouts/generate/route.ts
+// │ Replace the existing file at <repo-root>/app/api/payouts/generate/route.ts
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
@@ -44,7 +48,7 @@ export async function POST(req: NextRequest) {
 
   const { data: affiliate, error: affErr } = await sb
     .from('affiliates')
-    .select('id, name, handle, commission_rate, client_id, created_at')
+    .select('id, name, handle, commission_type, commission_value, client_id, created_at')
     .eq('id', affiliateId)
     .eq('client_id', clientId)
     .single()
@@ -66,7 +70,10 @@ export async function POST(req: NextRequest) {
   const totalRevenue = (events || []).reduce((s, e) => s + (e.order_value || 0), 0)
   const commission   = (events || []).reduce((s, e) => {
     if (e.commission_amount) return s + e.commission_amount
-    return s + (e.order_value || 0) * ((affiliate.commission_rate || 0) / 100)
+    // Fallback when a sale row has no precomputed commission_amount: mirror the
+    // attribution math — flat = fixed value, percentage = order_value * value / 100.
+    const v = affiliate.commission_value || 0
+    return s + (affiliate.commission_type === 'flat' ? v : (e.order_value || 0) * v / 100)
   }, 0)
 
   if (salesCount === 0) {
