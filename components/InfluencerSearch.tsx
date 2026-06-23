@@ -1,5 +1,10 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  components/InfluencerSearch.tsx                            │
+// │ Replace the existing file at <repo-root>/components/InfluencerSearch.tsx │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
 import { useState, useRef } from 'react'
+import { INDUSTRY_LABELS } from '@/lib/industries'
 
 interface SearchResult {
   status:       'not_found' | 'no_overlap' | 'overlap'
@@ -16,23 +21,6 @@ interface SearchResult {
     sharedVisitors:     number
     category:           string | null
   }[]
-}
-
-const CATEGORY_LABELS: Record<string, string> = {
-  saas:             'SaaS',
-  d2c_fashion:      'D2C Fashion',
-  d2c_beauty:       'D2C Beauty & Skincare',
-  d2c_health:       'D2C Health & Wellness',
-  d2c_food:         'D2C Food & Beverage',
-  d2c_home:         'D2C Home & Lifestyle',
-  d2c_electronics:  'D2C Electronics',
-  d2c_sports:       'D2C Sports & Fitness',
-  d2c_kids:         'D2C Kids & Baby',
-  d2c_accessories:  'D2C Accessories',
-  services:         'Services',
-  edtech:           'EdTech',
-  fintech:          'FinTech',
-  other:            'Other',
 }
 
 export default function InfluencerSearch({ clientId }: { clientId?: string }) {
@@ -123,7 +111,7 @@ export default function InfluencerSearch({ clientId }: { clientId?: string }) {
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                       <span style={{ color: 'var(--amber)' }}>@{result.handle}</span>'s audience
                       {m.category && (
-                        <span style={{ color: 'var(--text-dim)' }}> in <em>{CATEGORY_LABELS[m.category] || m.category}</em></span>
+                        <span style={{ color: 'var(--text-dim)' }}> in <em>{INDUSTRY_LABELS[m.category] || m.category}</em></span>
                       )}
                       {' '}is overlapping with your earlier collaboration with{' '}
                       <span style={{ color: 'var(--amber)' }}>@{m.collaboratorHandle}</span>
