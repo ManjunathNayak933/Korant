@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/payouts/[id]/route.ts                              │
+// │ Replace the existing file at <repo-root>/app/api/payouts/[id]/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -15,6 +19,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (role === 'client' && existing.client_id !== userId) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+  // BUG FIX: an agency may only act on payouts of clients it actually manages.
+  // Previously only the client role was checked, so any agency account could mark
+  // ANY client's payout paid.
+  if (role === 'agency') {
+    const { data: rel } = await sb.from('agency_handlers')
+      .select('id').eq('agency_id', userId).eq('client_id', existing.client_id).maybeSingle()
+    if (!rel) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   const body = await request.json()
