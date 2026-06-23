@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/influencer-center.ts                                   │
+// │ Replace the existing file at <repo-root>/lib/influencer-center.ts      │
+// └──────────────────────────────────────────────────────────────────────┘
 // Influencer Center logic.
 // No new tables. Reads from existing influencers + events tables.
 // The SQL view (influencer_center) does all aggregation.
@@ -20,7 +24,11 @@ export async function getAudienceOverlap(
     .from('influencers')
     .select('id')
     .ilike('handle', normalHandle)
-    .eq('platform', prospectPlatform)
+    // BUG FIX: the influencers table column is `social_platform`, not `platform`.
+    // The old `.eq('platform', …)` errored on every call, so `prospectInfluencers`
+    // came back null and this whole function returned [] — i.e. the overlap panel
+    // ALWAYS showed "no overlap". This restores it.
+    .eq('social_platform', prospectPlatform)
 
   if (!prospectInfluencers?.length) return []
   const prospectIds = prospectInfluencers.map(i => i.id)
