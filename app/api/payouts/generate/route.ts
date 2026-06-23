@@ -21,7 +21,12 @@ export async function POST(req: NextRequest) {
   if (!affiliateId) return NextResponse.json({ error: 'affiliateId required' }, { status: 400 })
 
   const today        = new Date()
-  const currentMonth = today.toISOString().slice(0, 7) // 'YYYY-MM'
+  // NOTE (IST): currentMonth/periodEnd are derived from UTC `now()`. For an India
+  // business this can misclassify the boundary — e.g. at 02:00 IST on Jun 1, UTC
+  // is still May 31, so currentMonth reads '...-05' and a payout for June would be
+  // rejected as a "future month" for ~5.5h. Aligning this to IST is part of the
+  // coordinated timezone change (must move with record_click + metrics windows).
+  const currentMonth = today.toISOString().slice(0, 7) // 'YYYY-MM' (UTC)
   const selected     = month || currentMonth           // 'YYYY-MM'
 
   // ── Reject future months ───────────────────────────────────────────────
@@ -37,11 +42,13 @@ export async function POST(req: NextRequest) {
     // Current month: cover up to and including today
     periodEnd = today.toISOString().slice(0, 10)
   } else {
-    // Past month: cover the full month (1st to last day)
-    const lastDay = new Date(selected + '-01')
-    lastDay.setMonth(lastDay.getMonth() + 1)
-    lastDay.setDate(0) // last day of selected month
-    periodEnd = lastDay.toISOString().slice(0, 10)
+    // Past month: cover the full month (1st to last day).
+    // Deterministic last-day-of-month via UTC. The old
+    // `new Date(selected+'-01').setMonth(+1); setDate(0)` mutated in the runtime's
+    // LOCAL timezone and was correct only because Cloudflare runs in UTC.
+    const [sY, sM] = selected.split('-').map(Number) // sM is 1-based
+    // Day 0 of the *next* month = the last day of `selected`.
+    periodEnd = new Date(Date.UTC(sY, sM, 0)).toISOString().slice(0, 10)
   }
 
   const sb = getSupabaseAdmin()
