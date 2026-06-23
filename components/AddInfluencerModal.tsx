@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  components/AddInfluencerModal.tsx                          │
+// │ Replace the existing file at <repo-root>/components/AddInfluencerModal.tsx │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
 import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
 import { useState, useRef, useEffect } from 'react'
@@ -9,6 +13,9 @@ interface Props {
   campaigns: { id: string; name: string }[]
   onClose: () => void
   onCreated: (inf: any) => void
+  // BUG FIX (deep-link prefill): the Influencer Center "Add to My Account" button
+  // passes a discovered profile here so the form opens pre-populated.
+  prefill?: { name?: string; handle?: string; platform?: string; social_url?: string }
 }
 
 interface CheckResult {
@@ -28,11 +35,13 @@ interface CheckResult {
 const fmtNum = (n: number) => n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n)
 const fmtRev = (n: number) => '₹' + (n >= 100000 ? (n/100000).toFixed(1)+'L' : n >= 1000 ? (n/1000).toFixed(0)+'K' : String(Math.round(n)))
 
-export default function AddInfluencerModal({ clientId, campaigns, onClose, onCreated }: Props) {
+export default function AddInfluencerModal({ clientId, campaigns, onClose, onCreated, prefill }: Props) {
   const couponIntegrations = useCouponIntegrations()
   const [form, setForm] = useState({
-    name: '', handle: '', social_platform: 'instagram',
-    social_url: '', destination_url: '', discount_code: '', fee: '', campaign_id: ''
+    name: prefill?.name || '', handle: prefill?.handle || '',
+    social_platform: prefill?.platform || 'instagram',
+    social_url: prefill?.social_url || '',
+    destination_url: '', discount_code: '', fee: '', campaign_id: ''
   })
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
@@ -202,6 +211,9 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
                 { value: 'youtube',   label: 'YouTube' },
                 { value: 'twitter',   label: 'Twitter/X' },
                 { value: 'tiktok',    label: 'TikTok' },
+                { value: 'linkedin',  label: 'LinkedIn' },
+                { value: 'facebook',  label: 'Facebook' },
+                { value: 'snapchat',  label: 'Snapchat' },
               ]} />
             </FormField>
             <FormField label="Social URL">
