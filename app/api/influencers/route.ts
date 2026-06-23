@@ -1,12 +1,15 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/influencers/route.ts                               │
+// │ Replace the existing file at <repo-root>/app/api/influencers/route.ts  │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { generateSlug, ensureUniqueSlug } from '@/lib/tracking'
+import { ensureUniqueSlug } from '@/lib/tracking'
 import { checkPlanLimit } from '@/lib/planLimits'
-import { createShopifyDiscountCode, updateShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
+import { createShopifyDiscountCode } from '@/lib/shopify'
 import { createRazorpayOffer } from '@/lib/razorpay'
-import { cacheDel, listKey } from '@/lib/cache'
 
 export async function GET(request: NextRequest) {
   const role = request.headers.get('x-user-role')!
@@ -76,7 +79,17 @@ export async function POST(request: NextRequest) {
         campaign_id: body.campaign_id,
       }, { onConflict: 'influencer_id,campaign_id', ignoreDuplicates: true })
     }
-    return NextResponse.json({ ...existing, _existed: true }, { status: 200 })
+    // BUG FIX: previously we returned `existing` which was selected with only
+    // (id, name, campaign_id). The client prepended that stub to the influencer
+    // list, producing a card with blank handle/platform, undefined is_active
+    // (rendered as "paused"), and a dead Link button. Re-select the full row so
+    // the returned object is a complete influencer.
+    const { data: full } = await sb
+      .from('influencers')
+      .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, is_active, campaign_id, created_at')
+      .eq('id', existing.id)
+      .single()
+    return NextResponse.json({ ...(full || existing), _existed: true }, { status: 200 })
   }
 
   const slugBase = normalHandle.replace(/[^a-z0-9]/g, '')
@@ -135,6 +148,5 @@ export async function POST(request: NextRequest) {
     }, { onConflict: 'influencer_id,campaign_id', ignoreDuplicates: true })
   }
 
-  await cacheDel(listKey('influencers', clientId))
   return NextResponse.json(data, { status: 201 })
 }
