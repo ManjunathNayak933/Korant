@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/affiliate-signup/[clientSlug]/route.ts
+// │ Replace the existing file at <repo-root>/app/api/affiliate-signup/[clientSlug]/route.ts
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -9,7 +13,7 @@ async function getClientBySlug(clientSlug: string) {
   const sb = getSupabaseAdmin()
   const { data } = await sb
     .from('clients')
-    .select('id, name, affiliate_slug, destination_url')
+    .select('id, name, custom_domain, shopify_domain')
     .eq('affiliate_slug', clientSlug)
     .single()
   return data
@@ -86,7 +90,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
   }
 
-  // New signup — fall back to the client's own destination_url, never a hardcoded domain.
+  // New signup — fall back to the client's own storefront, never a hardcoded domain.
+  // `clients` has no destination_url column; the client's site is custom_domain
+  // (preferred) or shopify_domain. Normalise to an absolute URL; '/' as last resort
+  // so the NOT NULL affiliates.destination_url is always satisfied.
+  const toUrl = (d?: string | null) => (d ? (/^https?:\/\//.test(d) ? d : `https://${d}`) : null)
+  const clientHome = toUrl(client.custom_domain) || toUrl(client.shopify_domain) || '/'
   const slugBase = handle.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
   const redirect_slug = await ensureUniqueSlug(`aff-${slugBase}`)
   const randomSuffix = Math.floor(Math.random() * 90 + 10)
@@ -103,7 +112,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       email: email.toLowerCase(),
       phone: body.phone || null,
       redirect_slug,
-      destination_url: body.destination_url || client.destination_url,
+      destination_url: body.destination_url || clientHome,
       discount_code,
       commission_type: program.commission_type,
       commission_value: program.commission_value,
