@@ -1,8 +1,13 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/influencers/[id]/route.ts                          │
+// │ Replace the existing file at <repo-root>/app/api/influencers/[id]/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { deleteShopifyPriceRule } from '@/lib/shopify'
+import { invalidateLink } from '@/lib/links'
 
 async function getOwnedInfluencer(id: string, role: string, userId: string) {
   const sb = getSupabaseAdmin()
@@ -44,6 +49,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const { data, error } = await sb.from('influencers').update(updates).eq('id', id).select().single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // BUG FIX: the /r/[slug] redirect caches the resolved link (destination URL +
+  // partner name) in KV for 10 min. Without busting it, an edited destination_url
+  // or renamed influencer kept serving stale data until the TTL expired. The
+  // redirect_slug itself is immutable, so the existing slug is the right key.
+  await invalidateLink(existing.redirect_slug)
   return NextResponse.json(data)
 }
 
@@ -61,5 +71,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   }
   const { error } = await sb.from('influencers').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // Drop the cached link so /r/[slug] stops resolving a deleted partner.
+  await invalidateLink(existing.redirect_slug)
   return NextResponse.json({ ok: true })
 }
