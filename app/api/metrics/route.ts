@@ -160,41 +160,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // ── BUG FIX: net out reversed sales (refunds / cancellations) ───────────
-    // Dashboard figures come from the partner_stats_monthly rollup, which counts
-    // a sale when its event is first inserted. reverseSale() only sets
-    // events.reversed_at on a later UPDATE, so unless the rollup is recomputed to
-    // exclude them, refunded orders stay in these totals and overstate revenue &
-    // commission. We subtract reversed sale events for the month here so the
-    // dashboard matches the payout generator (which already filters
-    // reversed_at IS NULL). Reversed rows are rare → this query is cheap.
-    //
-    // CONTRACT: the rollup is expected to COUNT every sale (including ones later
-    // reversed) and let this route net them out. If your rollup ALREADY excludes
-    // reversed rows, delete this block to avoid double-subtracting. See
-    // database/migrations/2026_partner_stats_reversed_contract.sql.
-    let reversedQuery = sb
-      .from('events')
-      .select('influencer_id, affiliate_id, publication_id, type, order_value, commission_amount')
-      .eq('client_id', clientId)
-      .in('type', ['code_sale', 'cookie_sale'])
-      .not('reversed_at', 'is', null)
-      .gte('timestamp', `${month}-01`)
-      .lt('timestamp', nextMonthStr)
-    if (campaignId) reversedQuery = reversedQuery.eq('campaign_id', campaignId)
-    const { data: reversedSales } = await reversedQuery
-
-    for (const e of (reversedSales || [])) {
-      const pid = e.influencer_id || e.affiliate_id || e.publication_id
-      if (!pid || !dedupMap[pid]) continue
-      const row = dedupMap[pid]
-      row.sales      = Math.max(0, row.sales      - 1)
-      row.revenue    = Math.max(0, row.revenue    - (Number(e.order_value)      || 0))
-      row.commission = Math.max(0, row.commission - (Number(e.commission_amount) || 0))
-      if (e.type === 'code_sale')   row.code_sales   = Math.max(0, row.code_sales   - 1)
-      if (e.type === 'cookie_sale') row.cookie_sales = Math.max(0, row.cookie_sales - 1)
-    }
-
+    // NOTE (refunds / bug 3): we do NOT net out reversed sales here. Verified via
+    // database/migrations/2026_partner_stats_reversed_contract.sql that
+    // partner_stats_monthly already EXCLUDES reversed rows (the drift query
+    // returned no rows), so subtracting them again would understate revenue. The
+    // payout generator independently reads events with reversed_at IS NULL, so
+    // payouts are correct regardless. If a refund ever makes the dashboard
+    // overcount, fix the rollup in the DB (see that migration's reconcile),
+    // don't re-add a net-out here.
     const partnerStats = Object.values(dedupMap)
 
     const influencers  = infRes.data  || []
