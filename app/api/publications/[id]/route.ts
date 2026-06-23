@@ -1,7 +1,12 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/publications/[id]/route.ts                         │
+// │ Replace the existing file at <repo-root>/app/api/publications/[id]/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { invalidateLink } from '@/lib/links'
 
 async function getOwnedPublication(id: string, role: string, userId: string) {
   const sb = getSupabaseAdmin()
@@ -43,6 +48,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const { data, error } = await sb.from('publications').update(updates).eq('id', id).select().single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // BUG FIX: the /r/[slug] redirect caches the resolved link (destination URL +
+  // publication name) in KV for ~10 min. Without busting it, an edited
+  // destination_url or renamed publication kept serving stale data until the TTL.
+  await invalidateLink(existing.redirect_slug)
   return NextResponse.json(data)
 }
 
@@ -57,5 +66,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   const sb = getSupabaseAdmin()
   const { error } = await sb.from('publications').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // Drop the cached link so /r/[slug] stops resolving a deleted publication.
+  await invalidateLink(existing.redirect_slug)
   return NextResponse.json({ ok: true })
 }
