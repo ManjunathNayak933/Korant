@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/whatsapp/campaigns/[id]/send/route.ts              │
+// │ Replace the existing file at <repo-root>/app/api/whatsapp/campaigns/[id]/send/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
@@ -48,12 +52,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: 'No opted-in contacts in this list' }, { status: 400 })
   }
 
-  // Mark as sending immediately and return — the actual send runs in background
-  await sb.from('whatsapp_campaigns').update({
-    status: 'sending',
-    sent_at: new Date().toISOString(),
-    total_contacts: contacts.length,
-  }).eq('id', id)
+  // BUG FIX (duplicate-send race): the status checks above are a fast pre-filter,
+  // but check-then-set is not atomic — two near-simultaneous requests could both
+  // read a non-sending status and both fire to every contact (double the messages
+  // to customers AND double the cost). Claim the send with a CONDITIONAL update
+  // that only succeeds if the status is still what we just read; if another request
+  // already flipped it to 'sending', this matches 0 rows and we bail.
+  const priorStatus = campaign.status
+  const { data: claimed } = await sb
+    .from('whatsapp_campaigns')
+    .update({ status: 'sending', sent_at: new Date().toISOString(), total_contacts: contacts.length })
+    .eq('id', id)
+    .eq('status', priorStatus)
+    .select('id')
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({ error: 'Send already in progress or completed' }, { status: 409 })
+  }
 
   // Use waitUntil so the worker keeps running after the response is sent.
   // The browser gets an immediate "started" response; frontend polls /stats for progress.
@@ -81,7 +95,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           templateName: campaign.template_name,
           language: template.language || 'en',
           variables,
-          trackingUrl: trackingLink,
+          // BUG FIX: the URL-button template is built as `base/{{1}}`, so the {{1}}
+          // value must be just the SLUG. Passing the full trackingLink here produced
+          // a doubled URL (`…/r/https://…/r/wa-xxx`). The body `__link__` variable
+          // still uses the full trackingLink (a full URL in message text is correct).
+          trackingUrl: campaign.tracking_slug,
         })
 
         if ('error' in result) {
