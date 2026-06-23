@@ -20,36 +20,38 @@ export async function POST(req: NextRequest) {
   const { affiliateId, month } = await req.json()
   if (!affiliateId) return NextResponse.json({ error: 'affiliateId required' }, { status: 400 })
 
-  const today        = new Date()
-  // NOTE (IST): currentMonth/periodEnd are derived from UTC `now()`. For an India
-  // business this can misclassify the boundary — e.g. at 02:00 IST on Jun 1, UTC
-  // is still May 31, so currentMonth reads '...-05' and a payout for June would be
-  // rejected as a "future month" for ~5.5h. Aligning this to IST is part of the
-  // coordinated timezone change (must move with record_click + metrics windows).
-  const currentMonth = today.toISOString().slice(0, 7) // 'YYYY-MM' (UTC)
-  const selected     = month || currentMonth           // 'YYYY-MM'
+  // Work in IST (Asia/Kolkata) so a payout "for June" covers the Indian calendar
+  // month and matches how clicks/sales are bucketed in the DB. formatToParts is
+  // locale-proof and gives zero-padded parts.
+  const istNow   = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  const istGet   = (t: string) => istNow.find(p => p.type === t)!.value
+  const todayIST     = `${istGet('year')}-${istGet('month')}-${istGet('day')}` // 'YYYY-MM-DD' (IST)
+  const currentMonth = todayIST.slice(0, 7)                                     // 'YYYY-MM'  (IST)
+  const selected     = month || currentMonth                                    // 'YYYY-MM'
 
   // ── Reject future months ───────────────────────────────────────────────
   if (selected > currentMonth) {
     return NextResponse.json({ error: `Cannot generate payout for a future month (${selected})` }, { status: 400 })
   }
 
-  const periodStart = `${selected}-01`
+  const periodStart = `${selected}-01` // IST calendar date, stored for display
 
-  // ── Determine period end ───────────────────────────────────────────────
+  // ── Determine period end (IST calendar date, stored for display) ────────
   let periodEnd: string
   if (selected === currentMonth) {
-    // Current month: cover up to and including today
-    periodEnd = today.toISOString().slice(0, 10)
+    periodEnd = todayIST // up to & including today (IST)
   } else {
-    // Past month: cover the full month (1st to last day).
-    // Deterministic last-day-of-month via UTC. The old
-    // `new Date(selected+'-01').setMonth(+1); setDate(0)` mutated in the runtime's
-    // LOCAL timezone and was correct only because Cloudflare runs in UTC.
+    // Last day of the selected month (pure calendar math, tz-independent).
     const [sY, sM] = selected.split('-').map(Number) // sM is 1-based
-    // Day 0 of the *next* month = the last day of `selected`.
     periodEnd = new Date(Date.UTC(sY, sM, 0)).toISOString().slice(0, 10)
   }
+
+  // Absolute-instant bounds for the timestamptz query: from IST 00:00 on
+  // periodStart up to (but not including) IST 00:00 on the day after periodEnd.
+  const startInstant = new Date(`${periodStart}T00:00:00+05:30`).toISOString()
+  const endExclusive = new Date(`${periodEnd}T00:00:00+05:30`)
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1) // next IST midnight after periodEnd
+  const endInstant   = endExclusive.toISOString()
 
   const sb = getSupabaseAdmin()
 
@@ -70,8 +72,8 @@ export async function POST(req: NextRequest) {
     .eq('client_id',    clientId)
     .in('type', ['code_sale', 'cookie_sale'])
     .is('reversed_at', null) // exclude refunded / cancelled sales
-    .gte('timestamp', periodStart)
-    .lte('timestamp', `${periodEnd}T23:59:59.999Z`)
+    .gte('timestamp', startInstant)
+    .lt('timestamp',  endInstant)
 
   const salesCount   = events?.length || 0
   const totalRevenue = (events || []).reduce((s, e) => s + (e.order_value || 0), 0)
