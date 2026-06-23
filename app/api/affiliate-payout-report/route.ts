@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/affiliate-payout-report/route.ts                   │
+// │ Replace the existing file at <repo-root>/app/api/affiliate-payout-report/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -14,14 +18,17 @@ export async function GET(request: NextRequest) {
   if (role === 'client' && clientId !== userId) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const sb = getSupabaseAdmin()
-  // Use a half-open range [monthStart, monthEnd) computed from the calendar,
-  // not a hardcoded "-31" (which is an invalid date for Feb/30-day months and
-  // also drops the last day's events on 31-day months). Mirrors the boundary
-  // logic used in analytics/payouts routes.
-  const monthStart = month ? `${month}-01` : '2020-01-01'
-  const monthEnd = month
-    ? (() => { const d = new Date(`${month}-01T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + 1); return d.toISOString().slice(0, 10) })()
-    : '2099-12-31'
+  // IST month window (events are timestamptz; bucket by Asia/Kolkata so this report
+  // agrees with the dashboard and the payout generator). Half-open [start, end) so
+  // the last day isn't dropped. With no month, cover all time.
+  let startInstant = '2000-01-01T00:00:00Z'
+  let endInstant   = '2099-12-31T00:00:00Z'
+  if (month) {
+    const [ry, rm]      = month.split('-').map(Number) // rm 1-based
+    const nextMonthDate = new Date(Date.UTC(ry, rm, 1)).toISOString().slice(0, 10)
+    startInstant = new Date(`${month}-01T00:00:00+05:30`).toISOString()
+    endInstant   = new Date(`${nextMonthDate}T00:00:00+05:30`).toISOString()
+  }
 
   const { data: events } = await sb
     .from('events')
@@ -29,8 +36,9 @@ export async function GET(request: NextRequest) {
     .eq('client_id', clientId)
     .not('affiliate_id', 'is', null)
     .is('reversed_at', null) // exclude refunded / cancelled sales
-    .gte('timestamp', monthStart)
-    .lt('timestamp', monthEnd)
+    .in('type', ['code_sale', 'cookie_sale']) // BUG FIX: count sales only, not clicks
+    .gte('timestamp', startInstant)
+    .lt('timestamp', endInstant)
 
   const { data: affiliates } = await sb
     .from('affiliates')
