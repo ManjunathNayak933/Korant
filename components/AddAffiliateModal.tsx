@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  components/AddAffiliateModal.tsx                           │
+// │ Replace the existing file at <repo-root>/components/AddAffiliateModal.tsx │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
 import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
 import { useState } from 'react'
@@ -50,6 +54,14 @@ export default function AddAffiliateModal({ clientId, programs, campaigns, onClo
             <FormField label="Commission type"><Select value={form.commission_type} onChange={e => set('commission_type', e.target.value)} options={[{ value: 'percentage', label: 'Percentage' }, { value: 'flat', label: 'Flat (₹)' }]} /></FormField>
             <FormField label={form.commission_type === 'percentage' ? 'Commission %' : 'Commission ₹'}><Input type="number" value={form.commission_value} onChange={e => set('commission_value', e.target.value)} /></FormField>
           </div>
+        )}
+        {/* Attribution window is editable for custom commission (with a program, the
+            program's window is used). Commission trigger is per_sale — the only
+            trigger the attribution engine currently pays on. */}
+        {!form.program_id && (
+          <FormField label="Attribution window (days)">
+            <Input type="number" value={form.attribution_window_days} onChange={e => set('attribution_window_days', e.target.value)} />
+          </FormField>
         )}
         {error && <div style={{ color: '#e74c3c', fontSize: 12, marginBottom: 12 }}>{error}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
