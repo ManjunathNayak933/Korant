@@ -1,4 +1,9 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/whatsapp/media/route.ts                            │
+// │ Replace the existing file at <repo-root>/app/api/whatsapp/media/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
+export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getWAConfig, uploadMediaToMeta } from '@/lib/whatsapp'
 
