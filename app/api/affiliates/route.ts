@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/affiliates/route.ts                                │
+// │ Replace the existing file at <repo-root>/app/api/affiliates/route.ts  │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -94,7 +98,7 @@ export async function POST(request: NextRequest) {
     .single()
 
   if (error) {
-    if (error.code === '23505') return NextResponse.json({ error: 'Affiliate already exists in this program' }, { status: 409 })
+    if (error.code === '23505') return NextResponse.json({ error: 'An affiliate with that handle or discount code already exists for this client.' }, { status: 409 })
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
