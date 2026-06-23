@@ -7,6 +7,21 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { ensureUniqueSlug } from '@/lib/tracking'
+import { createShopifyDiscountCode } from '@/lib/shopify'
+import { createRazorpayOffer } from '@/lib/razorpay'
+import { cacheGet, cacheSet } from '@/lib/cache'
+
+// Lightweight fixed-window rate limit on Cloudflare KV. Returns false when the
+// caller is over budget. (A captcha + email verification is the proper next step
+// for a fully open endpoint, but this stops trivial mass-signup abuse.)
+async function underLimit(key: string, limit: number, windowSec: number): Promise<boolean> {
+  const n = (await cacheGet<number>(key)) || 0
+  if (n >= limit) return false
+  await cacheSet(key, n + 1, windowSec)
+  return true
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 // Look up a client by their public affiliate slug.
 async function getClientBySlug(clientSlug: string) {
@@ -58,6 +73,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!name || !email || !handle) {
     return NextResponse.json({ error: 'name, email, handle required' }, { status: 400 })
   }
+  // Basic input hardening for an unauthenticated, public endpoint.
+  if (!EMAIL_RE.test(String(email)) || String(name).length > 120 || String(handle).length > 80) {
+    return NextResponse.json({ error: 'Invalid name, email, or handle' }, { status: 400 })
+  }
+
+  // Rate limit: per IP (5/hour) and per brand slug (50/hour) to curb mass signup.
+  const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown'
+  const [ipOk, slugOk] = await Promise.all([
+    underLimit(`affsignup:ip:${ip}`, 5, 3600),
+    underLimit(`affsignup:slug:${clientSlug}`, 50, 3600),
+  ])
+  if (!ipOk || !slugOk) {
+    return NextResponse.json({ error: 'Too many signups right now. Please try again later.' }, { status: 429 })
+  }
 
   const client = await getClientBySlug(clientSlug)
   if (!client) return NextResponse.json({ error: 'Program not found' }, { status: 404 })
@@ -78,7 +107,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .select('id, name, redirect_slug, discount_code')
     .eq('email', email.toLowerCase())
     .eq('program_id', program.id)
-    .single()
+    .maybeSingle()
 
   if (existing) {
     const trackingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/r/${existing.redirect_slug}`
@@ -124,6 +153,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // BUG FIX: actually create the discount code on Shopify/Razorpay, like the
+  // authenticated add path does. Without this the ambassador was shown a code
+  // that did not exist on the store, so customers got "invalid discount code".
+  if (discount_code) {
+    try {
+      const [shopifyResult, razorpayResult] = await Promise.allSettled([
+        createShopifyDiscountCode(client.id, discount_code),
+        createRazorpayOffer(client.id, discount_code),
+      ])
+      const updates: Record<string, unknown> = {}
+      if (shopifyResult.status === 'fulfilled' && shopifyResult.value) updates.shopify_price_rule_id = shopifyResult.value.priceRuleId
+      if (razorpayResult.status === 'fulfilled' && razorpayResult.value) updates.razorpay_offer_id = razorpayResult.value.offerId
+      if (Object.keys(updates).length > 0) await sb.from('affiliates').update(updates).eq('id', affiliate.id)
+    } catch {}
+  }
 
   const trackingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/r/${redirect_slug}`
   return NextResponse.json({ welcome_back: false, name, tracking_link: trackingLink, discount_code, affiliate_id: affiliate.id }, { status: 201 })
