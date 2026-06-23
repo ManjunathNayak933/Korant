@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/attribution.ts                                         │
+// │ Replace the existing file at <repo-root>/lib/attribution.ts          │
+// └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 import { invalidateClientMetrics } from './cache'
 
@@ -81,7 +85,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
   if (discountCode) {
     const { data: inf } = await sb
       .from('influencers')
-      .select('id, name, campaign_id, fee')
+      .select('id, name, campaign_id')
       .eq('client_id', clientId)
       .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
