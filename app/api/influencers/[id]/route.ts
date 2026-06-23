@@ -6,7 +6,7 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { deleteShopifyPriceRule } from '@/lib/shopify'
+import { createShopifyDiscountCode, updateShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
 import { invalidateLink } from '@/lib/links'
 
 async function getOwnedInfluencer(id: string, role: string, userId: string) {
@@ -47,6 +47,27 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   for (const key of allowed) {
     if (key in body) updates[key] = body[key]
   }
+
+  // BUG FIX: a discount-code change must propagate to Shopify, or the store and
+  // Korant diverge. Normalise to uppercase (as on creation), then update/create/delete.
+  if ('discount_code' in body) {
+    const newCode = body.discount_code ? String(body.discount_code).toUpperCase() : null
+    updates.discount_code = newCode
+    try {
+      if (newCode) {
+        if (existing.shopify_price_rule_id) {
+          await updateShopifyDiscountCode(existing.client_id, existing.shopify_price_rule_id, newCode)
+        } else {
+          const r = await createShopifyDiscountCode(existing.client_id, newCode)
+          if (r) updates.shopify_price_rule_id = r.priceRuleId
+        }
+      } else if (existing.shopify_price_rule_id) {
+        await deleteShopifyPriceRule(existing.client_id, existing.shopify_price_rule_id)
+        updates.shopify_price_rule_id = null
+      }
+    } catch { /* discount sync is best-effort; never block the edit */ }
+  }
+
   const { data, error } = await sb.from('influencers').update(updates).eq('id', id).select().single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   // BUG FIX: the /r/[slug] redirect caches the resolved link (destination URL +
