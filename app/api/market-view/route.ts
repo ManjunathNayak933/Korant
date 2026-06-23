@@ -1,8 +1,23 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/market-view/route.ts
+// │ Replace the existing file at <repo-root>/app/api/market-view/route.ts
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isProClient, platformHasEnoughData } from '@/lib/planLimits'
+
+// `events` has no `channel` column — record_click and the sale-attribution inserts
+// set the partner FK instead. Derive the channel from whichever FK is present,
+// matching the taxonomy in lib/links.ts (influencer | seo | affiliate | direct).
+type PartnerRow = { influencer_id?: string | null; publication_id?: string | null; affiliate_id?: string | null }
+function channelOf(e: PartnerRow): string {
+  if (e.influencer_id) return 'influencer'
+  if (e.publication_id) return 'seo'
+  if (e.affiliate_id) return 'affiliate'
+  return 'direct'
+}
 
 export async function GET(request: NextRequest) {
   const role   = request.headers.get('x-user-role')!
@@ -46,18 +61,18 @@ export async function GET(request: NextRequest) {
   // All events for this client in this location — strictly client-scoped
   let q = sb
     .from('events')
-    .select('id, type, order_value, influencer_id, visitor_id, channel')
+    .select('id, type, order_value, influencer_id, publication_id, affiliate_id, visitor_id')
     .eq('client_id', userId)
     .eq(locField, location)
     .gte('timestamp', since)
 
-  if (channel) q = q.eq('channel', channel)
-
-  const { data: events } = await q
-  if (!events?.length) return NextResponse.json({ empty: true, location })
+  const { data: rawEvents } = await q
+  // `channel` isn't a column — filter in memory using the derived channel.
+  const events = channel ? (rawEvents || []).filter(e => channelOf(e) === channel) : (rawEvents || [])
+  if (!events.length) return NextResponse.json({ empty: true, location })
 
   const clicks       = events.filter(e => e.type === 'click')
-  const sales        = events.filter(e => e.type === 'sale')
+  const sales        = events.filter(e => e.type === 'code_sale' || e.type === 'cookie_sale')
   const revenue      = sales.reduce((s, e) => s + (e.order_value || 0), 0)
   const uniqueVisitors = new Set(clicks.map(e => e.visitor_id).filter(Boolean)).size
   const convRate     = clicks.length > 0 ? (sales.length / clicks.length) * 100 : 0
@@ -89,12 +104,12 @@ export async function GET(request: NextRequest) {
   // Answers: which channel drives the most reach in this city?
   const channelMap: Record<string, { clicks: number; sales: number; revenue: number }> = {}
   for (const e of clicks) {
-    const ch = e.channel || 'direct'
+    const ch = channelOf(e)
     if (!channelMap[ch]) channelMap[ch] = { clicks: 0, sales: 0, revenue: 0 }
     channelMap[ch].clicks++
   }
   for (const e of sales) {
-    const ch = e.channel || 'direct'
+    const ch = channelOf(e)
     if (!channelMap[ch]) channelMap[ch] = { clicks: 0, sales: 0, revenue: 0 }
     channelMap[ch].sales++
     channelMap[ch].revenue += e.order_value || 0
@@ -108,27 +123,18 @@ export async function GET(request: NextRequest) {
     convRate: stats.clicks > 0 ? +((stats.sales / stats.clicks) * 100).toFixed(2) : 0,
   })).sort((a, b) => b.clicks - a.clicks)
 
-  // Buyer pincode — this client's own sales only
-  let buyerData: any[] = []
+  // Buyer pincode — DISABLED: no data source yet. `events` has no `buyer_pincode`
+  // column, and the order webhooks (shopify / razorpay / generic) don't capture a
+  // shipping postcode, so there is nothing to aggregate. The previous query selected
+  // a non-existent column, which errored and silently returned empty on every call.
+  //
+  // To enable: (1) add `buyer_pincode text` to the events table; (2) capture the
+  // order's shipping postcode in the webhook event insert; (3) restore an aggregation
+  // here filtering `.in('type', ['code_sale','cookie_sale'])` (NOT 'sale') and
+  // grouping by buyer_pincode.
+  const buyerData: any[] = []
   if (buyerMode) {
-    const { data: buyerEvents } = await sb
-      .from('events')
-      .select('buyer_pincode, order_value')
-      .eq('client_id', userId)
-      .eq('type', 'sale')
-      .gte('timestamp', since)
-      .not('buyer_pincode', 'is', null)
-    const pincodeMap: Record<string, { orders: number; revenue: number }> = {}
-    for (const e of buyerEvents || []) {
-      if (!e.buyer_pincode) continue
-      if (!pincodeMap[e.buyer_pincode]) pincodeMap[e.buyer_pincode] = { orders: 0, revenue: 0 }
-      pincodeMap[e.buyer_pincode].orders++
-      pincodeMap[e.buyer_pincode].revenue += e.order_value || 0
-    }
-    buyerData = Object.entries(pincodeMap)
-      .map(([pincode, s]) => ({ pincode, ...s }))
-      .sort((a, b) => b.orders - a.orders)
-      .slice(0, 20)
+    // Feature gated off until the buyer_pincode data source above exists — no-op.
   }
 
   return NextResponse.json({
