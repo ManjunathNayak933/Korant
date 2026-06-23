@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/affiliate-programs/[id]/route.ts                   │
+// │ Replace the existing file at <repo-root>/app/api/affiliate-programs/[id]/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -45,6 +49,18 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const sb = getSupabaseAdmin()
+  // Affiliates reference program_id via FK with no ON DELETE action, so a raw
+  // delete would throw an opaque 23503. Check first and return a clear message.
+  const { count } = await sb
+    .from('affiliates')
+    .select('id', { count: 'exact', head: true })
+    .eq('program_id', id)
+  if ((count || 0) > 0) {
+    return NextResponse.json(
+      { error: `Cannot delete: ${count} affiliate${count === 1 ? ' is' : 's are'} still in this program. Reassign or remove them first.` },
+      { status: 409 }
+    )
+  }
   const { error } = await sb.from('affiliate_programs').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
