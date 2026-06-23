@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  components/InfluencerCenter.tsx                            │
+// │ Replace the existing file at <repo-root>/components/InfluencerCenter.tsx │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
 import React, { useState, useEffect, useCallback } from 'react'
 import { INDUSTRY_LABELS } from '@/lib/industries'
@@ -22,9 +26,12 @@ interface OverlapResult {
   overlapPercent: number
 }
 
-const PLATFORMS = ['instagram','youtube','twitter','linkedin','facebook','snapchat','other']
+// BUG FIX: keep this in sync with the platforms AddInfluencerModal can create.
+// TikTok was creatable but missing here, so TikTok influencers could never be
+// filtered. ('other' stays as a catch-all for any legacy values.)
+const PLATFORMS = ['instagram','youtube','twitter','tiktok','linkedin','facebook','snapchat','other']
 const platformIcon: Record<string, string> = {
-  instagram:'📸', youtube:'▶️', twitter:'𝕏',
+  instagram:'📸', youtube:'▶️', twitter:'𝕏', tiktok:'🎵',
   linkedin:'in', facebook:'𝑓', snapchat:'👻', other:'🔗'
 }
 
