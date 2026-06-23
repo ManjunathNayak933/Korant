@@ -176,8 +176,17 @@ export async function GET(request: NextRequest) {
     const waCampaigns  = waRes.data   || []
 
     // ── 5. Budget ────────────────────────────────────────────────────────────
-    const infFees  = influencers .filter((i: any) => i.created_at >= `${month}-01` && i.created_at < nextMonthStr).reduce((s: number, i: any) => s + (Number(i.fee)  || 0), 0)
-    const pubCosts = publications.filter((p: any) => p.created_at >= `${month}-01` && p.created_at < nextMonthStr).reduce((s: number, p: any) => s + (Number(p.cost) || 0), 0)
+    // Count fees/costs for partners created within this IST month, as absolute
+    // instants, so budget lines up with the IST-bucketed click/sale stats.
+    const istStart = new Date(`${month}-01T00:00:00+05:30`).getTime()
+    const istEnd   = new Date(`${nextMonthStr}T00:00:00+05:30`).getTime()
+    const inIstMonth = (iso?: string) => {
+      if (!iso) return false
+      const t = new Date(iso).getTime()
+      return t >= istStart && t < istEnd
+    }
+    const infFees  = influencers .filter((i: any) => inIstMonth(i.created_at)).reduce((s: number, i: any) => s + (Number(i.fee)  || 0), 0)
+    const pubCosts = publications.filter((p: any) => inIstMonth(p.created_at)).reduce((s: number, p: any) => s + (Number(p.cost) || 0), 0)
     const totalBudget = infFees + pubCosts
 
     // ── 6. Metadata lookup maps ──────────────────────────────────────────────
