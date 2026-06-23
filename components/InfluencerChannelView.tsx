@@ -1,5 +1,9 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  components/InfluencerChannelView.tsx                       │
+// │ Replace the existing file at <repo-root>/components/InfluencerChannelView.tsx │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import AddInfluencerModal from './AddInfluencerModal'
 import Modal from './Modal'
 import CampaignFilter from './CampaignFilter'
@@ -22,7 +26,7 @@ interface InfluencerMetrics {
   deviceBreakdown?: { mobile: number; desktop: number; tablet: number }
 }
 interface VisitorStats { unique: number; returned: number; shared: number; returnRate: number; sharedRate: number }
-interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void }
+interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string; onCampaignAdd?: () => void; prefill?: { name?: string; handle?: string; platform?: string; social_url?: string } }
 
 const SORT_OPTIONS = [
   { value: 'clicks',  label: 'Clicks' },
@@ -43,13 +47,26 @@ function calcROI(revenue: number, fee: number): number | null {
   return Math.round(((revenue - fee) / fee) * 100)
 }
 
-export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd }: Props) {
+export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd, prefill }: Props) {
   const [influencers, setInfluencers] = useState<Influencer[]>([])
   const [metrics, setMetrics] = useState<Record<string, InfluencerMetrics>>({})
   const [selectedCampaign, setSelectedCampaign] = useState('')
   const [sort, setSort] = useState('clicks')
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  // BUG FIX (deep-link prefill): when the Influencer Center sends a discovered
+  // profile via ?prefill=, open the Add modal once, pre-populated. A ref guards
+  // against re-opening on every re-render; closing clears it so the manual
+  // "+ Influencer" button still opens a blank form.
+  const [pendingPrefill, setPendingPrefill] = useState(prefill)
+  const prefillConsumed = useRef(false)
+  useEffect(() => {
+    if (prefill && !prefillConsumed.current) {
+      prefillConsumed.current = true
+      setPendingPrefill(prefill)
+      setShowAdd(true)
+    }
+  }, [prefill])
   const [statsModal, setStatsModal] = useState<Influencer | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
@@ -254,7 +271,7 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
         </div>
       )}
 
-      {showAdd && <AddInfluencerModal clientId={clientId} campaigns={campaigns} onClose={() => setShowAdd(false)} onCreated={inf => { setInfluencers(prev => [inf, ...prev]); setShowAdd(false) }} />}
+      {showAdd && <AddInfluencerModal clientId={clientId} campaigns={campaigns} prefill={pendingPrefill} onClose={() => { setShowAdd(false); setPendingPrefill(undefined) }} onCreated={inf => { setInfluencers(prev => [inf, ...prev]); setShowAdd(false); setPendingPrefill(undefined) }} />}
 
       {/* Full Stats Modal — includes visitor breakdown */}
       {statsModal && (
