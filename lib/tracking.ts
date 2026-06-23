@@ -1,4 +1,9 @@
-import { getSupabaseAdmin } from './supabase'
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/tracking.ts                                            │
+// │ Replace the existing file at <repo-root>/lib/tracking.ts              │
+// └──────────────────────────────────────────────────────────────────────┘
+// NOTE: `findEntityBySlug` was removed — it was dead code. The redirect path
+// (`/r/[slug]`) resolves links through `resolveLink` in lib/links.ts, not this.
 
 export function generateSlug(prefix: string = ''): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -15,35 +20,6 @@ export async function ensureUniqueSlug(base: string): Promise<string> {
   // Append a random 6-char suffix — collision probability is ~1 in 2 billion, no loop needed
   const suffix = Math.random().toString(36).slice(2, 8)
   return `${clean}-${suffix}`
-}
-
-export async function findEntityBySlug(slug: string) {
-  const sb = getSupabaseAdmin()
-  // Check influencer
-  const { data: influencer } = await sb
-    .from('influencers')
-    .select('id, client_id, campaign_id, destination_url, is_active, discount_code, name')
-    .eq('redirect_slug', slug)
-    .single()
-  if (influencer) return { type: 'influencer' as const, entity: influencer }
-
-  // Check publication
-  const { data: publication } = await sb
-    .from('publications')
-    .select('id, client_id, campaign_id, destination_url, is_active, name:publication_name')
-    .eq('redirect_slug', slug)
-    .single()
-  if (publication) return { type: 'publication' as const, entity: publication }
-
-  // Check affiliate
-  const { data: affiliate } = await sb
-    .from('affiliates')
-    .select('id, client_id, campaign_id, destination_url, is_active, discount_code, name')
-    .eq('redirect_slug', slug)
-    .single()
-  if (affiliate) return { type: 'affiliate' as const, entity: affiliate }
-
-  return null
 }
 
 export function parseGeoFromRequest(req: Request) {
