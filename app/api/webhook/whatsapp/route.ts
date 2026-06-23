@@ -1,7 +1,14 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/webhook/whatsapp/route.ts                          │
+// │ Replace the existing file at <repo-root>/app/api/webhook/whatsapp/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+
+// Status ordering so an out-of-order webhook can't move a message backwards.
+const STATUS_RANK: Record<string, number> = { sent: 1, delivered: 2, read: 3 }
 
 // Meta webhook verification (GET)
 export async function GET(request: NextRequest) {
@@ -67,16 +74,32 @@ export async function POST(request: NextRequest) {
       const timestamp = status.timestamp ? new Date(parseInt(status.timestamp) * 1000).toISOString() : new Date().toISOString()
       const errorMessage = status.errors?.[0]?.message || null
 
-      const updates: Record<string, any> = { status: statusType }
-      if (statusType === 'delivered') updates.delivered_at = timestamp
-      if (statusType === 'read') updates.read_at = timestamp
-      if (statusType === 'failed') updates.error_message = errorMessage
-
       try {
-        await sb.from('whatsapp_messages').update(updates).eq('wa_message_id', waId)
+        // Read the current row first so we know the campaign and the existing status.
+        const { data: msg } = await sb.from('whatsapp_messages').select('campaign_id, status').eq('wa_message_id', waId).maybeSingle()
+        const cur = msg?.status
 
-        // Roll up to campaign totals
-        const { data: msg } = await sb.from('whatsapp_messages').select('campaign_id').eq('wa_message_id', waId).single()
+        // Timestamps/errors are independent facts — always record them.
+        const updates: Record<string, any> = {}
+        if (statusType === 'delivered') updates.delivered_at = timestamp
+        if (statusType === 'read') updates.read_at = timestamp
+        if (statusType === 'failed') updates.error_message = errorMessage
+
+        // BUG FIX: only move `status` FORWARD. WhatsApp status webhooks can arrive
+        // out of order (e.g. a late 'delivered' after 'read'); the old code set
+        // status unconditionally and would regress 'read' back to 'delivered'.
+        // 'failed' only applies before success (sent → failed), never over read/delivered.
+        if (statusType === 'failed') {
+          if (!cur || cur === 'sent') updates.status = 'failed'
+        } else if (!cur || (STATUS_RANK[statusType] || 0) > (STATUS_RANK[cur] || 0)) {
+          updates.status = statusType
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await sb.from('whatsapp_messages').update(updates).eq('wa_message_id', waId)
+        }
+
+        // Roll up to campaign totals (count-based, so resilient to ordering).
         if (msg?.campaign_id) {
           // Count current totals
           const [{ count: delivered }, { count: read }] = await Promise.all([
