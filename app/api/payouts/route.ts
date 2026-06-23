@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/payouts/route.ts                                   │
+// │ Replace the existing file at <repo-root>/app/api/payouts/route.ts     │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -35,27 +39,30 @@ export async function POST(request: NextRequest) {
     if (role === 'client' && clientId !== userId) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const sb = getSupabaseAdmin()
-    const monthStart = `${month}-01`
-    // Calculate the actual last day of the month (handles Feb, 30-day months, leap years)
-    const lastDay = new Date(month + '-01')
-    lastDay.setMonth(lastDay.getMonth() + 1)
-    lastDay.setDate(0)
-    const monthEnd = lastDay.toISOString().slice(0, 10)
 
-    // Influencer payouts (fee-based)
+    // IST month window. events.timestamp is timestamptz; bucket by Asia/Kolkata so
+    // payouts agree with the dashboard. Half-open [start, end) so the LAST DAY of
+    // the month is NOT dropped (the old `.lte('...-30')` compared against midnight).
+    const monthStartDate = `${month}-01`                                            // IST calendar date
+    const [py, pm]       = month.split('-').map(Number)                             // pm 1-based
+    const nextMonthDate  = new Date(Date.UTC(py, pm, 1)).toISOString().slice(0, 10) // first of next month
+    const startInstant   = new Date(`${monthStartDate}T00:00:00+05:30`).toISOString()
+    const endInstant     = new Date(`${nextMonthDate}T00:00:00+05:30`).toISOString()
+
+    // Influencer payouts (fee-based) — "active" = had any non-reversed event this month
     const { data: influencers } = await sb
       .from('influencers')
       .select('id, name, handle, fee')
       .eq('client_id', clientId)
       .eq('is_active', true)
 
-    // Check which had activity
     const { data: infEvents } = await sb
       .from('events')
       .select('influencer_id')
       .eq('client_id', clientId)
-      .gte('timestamp', monthStart)
-      .lte('timestamp', monthEnd)
+      .is('reversed_at', null)
+      .gte('timestamp', startInstant)
+      .lt('timestamp', endInstant)
       .not('influencer_id', 'is', null)
 
     const activeInfIds = new Set((infEvents || []).map(e => e.influencer_id))
@@ -71,13 +78,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Affiliate payouts (commission-based)
+    // Affiliate payouts (commission-based) — MUST exclude refunded/cancelled sales,
+    // and only count actual sale events (not clicks).
     const { data: affCommissions } = await sb
       .from('events')
       .select('affiliate_id, commission_amount')
       .eq('client_id', clientId)
-      .gte('timestamp', monthStart)
-      .lte('timestamp', monthEnd)
+      .is('reversed_at', null)
+      .in('type', ['code_sale', 'cookie_sale'])
+      .gte('timestamp', startInstant)
+      .lt('timestamp', endInstant)
       .not('affiliate_id', 'is', null)
 
     const affTotals: Record<string, number> = {}
@@ -86,7 +96,7 @@ export async function POST(request: NextRequest) {
     }
     const { data: affiliates } = await sb.from('affiliates').select('id, name, handle').eq('client_id', clientId)
     for (const aff of (affiliates || [])) {
-      if (affTotals[aff.id] > 0) {
+      if ((affTotals[aff.id] || 0) > 0) {
         payoutInserts.push({
           client_id: clientId, entity_type: 'affiliate', entity_id: aff.id,
           entity_name: aff.name, handle: aff.handle, amount: affTotals[aff.id],
@@ -95,13 +105,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Publication payouts
+    // Publication payouts — published_at is a DATE column, so use a date half-open window
     const { data: pubs } = await sb
       .from('publications')
       .select('id, publication_name, cost, published_at')
       .eq('client_id', clientId)
-      .gte('published_at', monthStart)
-      .lte('published_at', monthEnd)
+      .gte('published_at', monthStartDate)
+      .lt('published_at', nextMonthDate)
 
     for (const pub of (pubs || [])) {
       if (pub.cost > 0) {
@@ -114,6 +124,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (payoutInserts.length === 0) return NextResponse.json({ message: 'No payouts to generate', count: 0 })
+
+    // Regenerate must REFRESH amounts but never disturb an already-paid payout.
+    // Delete this month's still-pending rows, then insert fresh: paid/processing
+    // rows survive the delete and their re-insert is ignored on conflict, so they
+    // are preserved while pending amounts are brought up to date. (The old
+    // ignoreDuplicates-only upsert froze stale amounts forever.)
+    await sb.from('payouts').delete()
+      .eq('client_id', clientId).eq('month', month).eq('status', 'pending')
 
     const { data, error } = await sb
       .from('payouts')
