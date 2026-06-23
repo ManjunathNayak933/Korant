@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/whatsapp.ts                                            │
+// │ Replace the existing file at <repo-root>/lib/whatsapp.ts              │
+// └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 
 const META_VERSION = 'v25.0'
@@ -15,7 +19,7 @@ export async function getWAConfig(clientId: string): Promise<WAConfig | null> {
     .from('whatsapp_configs')
     .select('phone_number_id, access_token, waba_id, verified')
     .eq('client_id', clientId)
-    .single()
+    .maybeSingle()
   if (!data?.verified) return null
   return data
 }
