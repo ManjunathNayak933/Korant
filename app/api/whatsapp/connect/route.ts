@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/whatsapp/connect/route.ts                         │
+// │ Replace the existing file at <repo-root>/app/api/whatsapp/connect/route.ts │
+// └──────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
@@ -12,7 +16,7 @@ export async function GET(request: NextRequest) {
     .from('whatsapp_configs')
     .select('phone_number_id, waba_id, phone_display, verified, monthly_conversations_used')
     .eq('client_id', userId)
-    .single()
+    .maybeSingle()
   return NextResponse.json(data || { connected: false })
 }
 
