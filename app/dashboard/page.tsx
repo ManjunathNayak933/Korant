@@ -1,3 +1,7 @@
+// ┌──────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/dashboard/page.tsx                                     │
+// │ Replace the existing file at <repo-root>/app/dashboard/page.tsx      │
+// └──────────────────────────────────────────────────────────────────────┘
 'use client'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
@@ -79,9 +83,24 @@ export default function DashboardPage() {
   const [overviewCampaign, setOverviewCampaign] = useState('')
   const [universeStats, setUniverseStats]       = useState({ totalUniverse: 0, totalMultiTouch: 0, totalSingleTouch: 0 })
   const [baseUrl, setBaseUrl]                   = useState('')
+  // BUG FIX: deep links from the Influencer Center land here as
+  // /dashboard?tab=influencer&prefill=<json>. These were previously ignored, so
+  // "Add to My Account" dropped the user on Overview with an empty Add form.
+  const [influencerPrefill, setInfluencerPrefill] = useState<{ name?: string; handle?: string; platform?: string; social_url?: string } | undefined>(undefined)
 
-  // Stable base URL after hydration
-  useEffect(() => { setBaseUrl(window.location.origin) }, [])
+  // Stable base URL after hydration + honor any ?tab / ?prefill deep link
+  useEffect(() => {
+    setBaseUrl(window.location.origin)
+    try {
+      const sp = new URLSearchParams(window.location.search)
+      const tab = sp.get('tab')
+      if (tab && TABS.some(t => t.id === tab)) setActiveTab(tab)
+      const pf = sp.get('prefill')
+      if (pf) setInfluencerPrefill(JSON.parse(pf))
+      // Strip the params so a refresh doesn't re-trigger the prefilled modal.
+      if (tab || pf) window.history.replaceState({}, '', window.location.pathname)
+    } catch { /* malformed param — ignore */ }
+  }, [])
 
   // Use UTC month values — the DB stores months via to_char(timestamp, 'YYYY-MM')
   // which is UTC. Using toISOString() on a local date shifts IST dates back one month.
@@ -298,7 +317,7 @@ export default function DashboardPage() {
 
         {activeTab === 'influencer' && (
           <div style={{ padding: '24px 0' }}>
-            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} />
+            <InfluencerChannelView clientId={user?.id} campaigns={campaigns} baseUrl={baseUrl} month={currentMonth} onCampaignAdd={() => setShowAddCampaign(true)} prefill={influencerPrefill} />
           </div>
         )}
 
