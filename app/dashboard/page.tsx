@@ -102,15 +102,20 @@ export default function DashboardPage() {
     } catch { /* malformed param — ignore */ }
   }, [])
 
-  // Use UTC month values — the DB stores months via to_char(timestamp, 'YYYY-MM')
-  // which is UTC. Using toISOString() on a local date shifts IST dates back one month.
-  const monthOptions = useMemo(() => Array.from({ length: 3 }, (_, i) => {
-    const now = new Date()
-    const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
-    const val   = d.toISOString().slice(0, 7)   // always UTC → '2026-05'
-    const label = new Intl.DateTimeFormat('default', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d)
-    return { val, label }
-  }), [])
+  // Month picker in IST (Asia/Kolkata). The DB now buckets clicks/sales by IST
+  // month, so the picker values must be IST 'YYYY-MM' or the dashboard would ask
+  // for a month the rollup never wrote. formatToParts is locale-proof.
+  const monthOptions = useMemo(() => {
+    const f  = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit' }).formatToParts(new Date())
+    const iy = Number(f.find(p => p.type === 'year')!.value)
+    const im = Number(f.find(p => p.type === 'month')!.value) // 1-based IST month
+    return Array.from({ length: 3 }, (_, i) => {
+      const d     = new Date(Date.UTC(iy, im - 1 - i, 1)) // pure calendar walk-back
+      const val   = d.toISOString().slice(0, 7)           // 'YYYY-MM' (IST month label)
+      const label = new Intl.DateTimeFormat('default', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d)
+      return { val, label }
+    })
+  }, [])
   const [currentMonth, setCurrentMonth] = useState(monthOptions[0].val)
 
   // Full load — called on mount, visibility change, and when month/campaign deps change
