@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
 
     // ── 2. Partner metadata ─────────────────────────────────────────────────
     let infQuery = sb.from('influencers')
-      .select('id, name, handle, fee, redirect_slug, discount_code, social_platform, is_active, created_at, campaign_id')
+      .select('id, name, handle, fee, redirect_slug, discount_code, commission_type, commission_value, commission_trigger, social_platform, is_active, created_at, campaign_id')
       .eq('client_id', clientId)
     let pubQuery = sb.from('publications')
       .select('id, publication_name, cost, redirect_slug, is_active, created_at, campaign_id')
@@ -224,6 +224,11 @@ export async function GET(request: NextRequest) {
           name:             m.name,
           handle:           m.handle,
           fee:              m.fee,
+          commissionEarned: p.commission,
+          commissionType:   m.commission_type,
+          commissionValue:  m.commission_value,
+          // True cost to the brand for this partner = retainer + commission paid.
+          totalCost:        (Number(m.fee) || 0) + (Number(p.commission) || 0),
           redirect_slug:    m.redirect_slug,
           discount_code:    m.discount_code,
           social_platform:  m.social_platform,
