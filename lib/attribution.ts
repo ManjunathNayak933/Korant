@@ -30,6 +30,19 @@ function calcCommission(orderValue: number, type: string, value: number): number
   return Math.round((orderValue * value) / 100 * 100) / 100
 }
 
+// Per-sale commission for an influencer. Off unless the partner has a positive
+// value AND an active trigger — so every pre-migration influencer (value 0)
+// resolves to 0, preserving the previous "influencers earn no commission" rule.
+function influencerCommission(
+  orderValue: number,
+  inf: { commission_type?: string | null; commission_value?: number | null; commission_trigger?: string | null }
+): number {
+  const value = Number(inf.commission_value) || 0
+  const trigger = inf.commission_trigger || 'per_sale'
+  if (value <= 0 || trigger !== 'per_sale') return 0
+  return calcCommission(orderValue, inf.commission_type || 'percentage', value)
+}
+
 export async function attributeSale(order: AttributionOrder): Promise<AttributionResult> {
   const sb = getSupabaseAdmin()
   const { clientId, orderValue, discountCode, mkSlug, platform } = order
@@ -85,7 +98,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
   if (discountCode) {
     const { data: inf } = await sb
       .from('influencers')
-      .select('id, name, campaign_id')
+      .select('id, name, campaign_id, commission_type, commission_value, commission_trigger')
       .eq('client_id', clientId)
       .ilike('discount_code', discountCode.trim())
       .eq('is_active', true)
@@ -93,7 +106,9 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
 
     if (inf) {
       if (await isDuplicate('influencer', inf.id)) return { attributed: false }
-      const commission = 0
+      // Influencers can now carry a per-sale commission ON TOP of their flat fee.
+      // Defaults (trigger 'per_sale', value 0) yield 0 → identical to old behaviour.
+      const commission = influencerCommission(orderValue, inf)
       const r = await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'code', commission })
       if (!r.ok) return { attributed: false, error: r.error }
       if (r.duplicate) return { attributed: false }
@@ -124,7 +139,7 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
   if (mkSlug) {
     const { data: inf } = await sb
       .from('influencers')
-      .select('id, name, campaign_id')
+      .select('id, name, campaign_id, commission_type, commission_value, commission_trigger')
       .eq('client_id', clientId)
       .eq('redirect_slug', mkSlug)
       .eq('is_active', true)
@@ -132,10 +147,11 @@ export async function attributeSale(order: AttributionOrder): Promise<Attributio
 
     if (inf) {
       if (await isDuplicate('influencer', inf.id)) return { attributed: false }
-      const r = await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'cookie', commission: 0 })
+      const commission = influencerCommission(orderValue, inf)
+      const r = await insertEvent({ entityType: 'influencer', entityId: inf.id, campaignId: inf.campaign_id, method: 'cookie', commission })
       if (!r.ok) return { attributed: false, error: r.error }
       if (r.duplicate) return { attributed: false }
-      return { attributed: true, channel: 'influencer', entityName: inf.name, method: 'cookie', commission: 0, orderId }
+      return { attributed: true, channel: 'influencer', entityName: inf.name, method: 'cookie', commission, orderId }
     }
 
     // 4. mkSlug → affiliate (per_sale, within attribution window)
