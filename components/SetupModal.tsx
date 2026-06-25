@@ -25,6 +25,13 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
 
   useEffect(() => { setCheckResult(null); setConfirmStep(null) }, [page])
 
+  // ── Live endpoints ────────────────────────────────────────────────────
+  // The beacon + webhook live on the MicroKorant origin, NOT the merchant's
+  // store, so every snippet pasted into a store theme must use the ABSOLUTE
+  // origin below. `cid` is this client's id; the beacon route requires it.
+  const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
+  const CID = user.id
+
   // Count only _done (NOT _skipped) for progress
   const doneCount = [ob.domain_done, ob.tracking_done, ob.webhook_done].filter(Boolean).length
 
@@ -89,21 +96,67 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
     setConfirmStep(null)
   }
 
+  // ── Snippet builder ───────────────────────────────────────────────────
+  // refCapture: read a partner ref off the landing URL (?ref= or ?mk=) and
+  //   store it first-party on the store domain so checkout can forward it.
+  // shopifyAttach (Shopify only): copy that ref onto the Shopify cart via
+  //   /cart/update.js, so it lands in the order's note_attributes — which is
+  //   exactly what /api/webhook/shopify reads (noteAttributes['mk_slug']).
+  // beaconFire: pageview pixel to /api/beacon (GET image — sends cookies,
+  //   needs no CORS). The route reads `cid`, `e`, `p`.
+  const refCapture = `  function gc(n){var m=document.cookie.match('(^|;)\\\\s*'+n+'=([^;]+)');return m?m[2]:null}
+  function sc(n,v,days){var e=new Date();e.setTime(e.getTime()+days*864e5);
+    document.cookie=n+'='+v+';path=/;expires='+e.toUTCString()+';SameSite=Lax'}
+  var ref=new URLSearchParams(location.search).get('ref')||new URLSearchParams(location.search).get('mk');
+  if(ref){sc('mk_slug',ref,30);if(!gc('mk_slug_first'))sc('mk_slug_first',ref,90)}`
+
+  const shopifyAttach = `
+  var slug=gc('mk_slug'),first=gc('mk_slug_first');
+  if(slug){fetch('/cart/update.js',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({attributes:{mk_slug:slug,mk_slug_first:first||''}})}).catch(function(){})}`
+
+  const beaconFire = `
+  new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=pageview&p='+encodeURIComponent(location.pathname)+'&t='+Date.now();`
+
   const snippet = `<!-- MicroKorant tracking — paste just before </body> -->
 <script>
 (function(){
-  var d=document,s='kv_partner',u='kv_id';
-  function gc(n){var m=d.cookie.match('(^|;)\\s*'+n+'=([^;]+)');return m?m[2]:null}
-  function sc(n,v,days){var e=new Date();e.setTime(e.getTime()+days*864e5);
-    d.cookie=n+'='+v+';path=/;expires='+e.toUTCString()+';SameSite=Lax'}
-  var p=new URLSearchParams(location.search).get('kv')||gc(s);
-  if(p)sc(s,p,90);
-  if(!gc(u))sc(u,Math.random().toString(36).slice(2),365);
-  fetch('/api/beacon',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({visitor_id:gc(u),partner_slug:gc(s),
-      page:location.pathname,referrer:document.referrer})}).catch(function(){});
+${refCapture}${trackingPlatform === 'shopify' ? shopifyAttach : ''}${beaconFire}
 })();
 </script>`
+
+  // Shopify thank-you page: record a purchase touchpoint for journey analytics.
+  // (The actual sale + commission is attributed by the order webhook, page 3.)
+  const orderStatusSnippet = `{% comment %} order-status.liquid — add at the bottom {% endcomment %}
+{% if first_time_accessed %}
+<script>
+  new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=purchase&p=/checkout/complete&t='+Date.now();
+</script>
+{% endif %}`
+
+  // Custom / headless conversion helper — also a GET beacon (e=lead).
+  const customConvertSnippet = `<!-- Conversion helper — paste once anywhere on your site -->
+<script>
+function mkConvert(leadValue) {
+  new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=lead'+
+    '&p='+encodeURIComponent(location.pathname)+'&v='+(leadValue||0)+'&t='+Date.now();
+}
+</script>
+
+<!-- Then call it wherever your conversion happens: -->
+
+<!-- Form submit button -->
+<button onclick="mkConvert(0)">Submit</button>
+
+<!-- After a successful API call (e.g. sign-up) -->
+yourSignupApi().then(function(r) {
+  if (r.ok) mkConvert(2500); // optional: lead value in your currency
+});
+
+<!-- Demo / contact click -->
+<a href="/demo" onclick="mkConvert(5000)">Book a demo</a>`
+
+  const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text) }
 
   // ── Shared helpers ────────────────────────────────────────────────────
   const stepDone    = (p: string) => p==='domain'?ob.domain_done:p==='tracking'?ob.tracking_done:ob.webhook_done
@@ -193,7 +246,7 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
           {cur==='domain'&&(
             <div>
               <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:14 }}>
-                Add a CNAME record in your DNS so tracking links show your brand name. Optional, but more professional.
+                Add a CNAME record in your DNS so tracking links show your brand name. Optional, but more professional — and it makes the tracking cookie first-party to your store, which improves cookie-based sale attribution.
               </p>
               <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 16px', marginBottom:14 }}>
                 <div style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-dim)', marginBottom:8 }}>DNS record to add</div>
@@ -250,30 +303,20 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
               {trackingPlatform==='shopify'&&(
                 <div>
                   <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:10 }}>
-                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 1 — All pages (visitor tracking)</strong>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 1 — All pages (visitor tracking + attribution)</strong>
                     Go to <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Admin → Online Store → Themes → ••• → Edit code</code><br/>
                     Open <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Layout / theme.liquid</code><br/>
-                    Find <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> near the very bottom. Paste the main script just above it.<br/>
-                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Google Analytics goes in {'<head>'} — our script goes before {'</body>'}. Same file, different spots, no conflict.</span>
+                    Find <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code> near the very bottom. Paste the main script (below) just above it.<br/>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>This script also copies the partner tag onto the Shopify cart, so the order carries it for the webhook to attribute. Google Analytics goes in {'<head>'}; ours goes before {'</body>'} — same file, no conflict.</span>
                   </div>
                   <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:8 }}>
-                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 2 — Order confirmation (sale tracking)</strong>
+                    <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 2 — Order confirmation (purchase signal)</strong>
                     In the same Edit code panel, open <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>order-status.liquid</code> and paste this at the bottom.<br/>
-                    <span style={{ color:'var(--text-dim)', fontSize:11 }}><code style={{ background:'var(--surface2)', padding:'1px 4px', borderRadius:3 }}>first_time_accessed</code> is a Shopify variable that prevents double-counting when the customer refreshes the thank-you page.</span>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>This records the purchase in the visitor journey. The actual sale &amp; commission are attributed by the order webhook in Step 3 — <code style={{ background:'var(--surface2)', padding:'1px 4px', borderRadius:3 }}>first_time_accessed</code> stops double-counting on refresh.</span>
                   </div>
                   <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 12px', marginBottom:12 }}>
-                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{`{% comment %} order-status.liquid — add at the bottom {% endcomment %}
-{% if first_time_accessed %}
-<script>
-  fetch('/api/beacon',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      visitor_id:(document.cookie.match('(^|;)\\s*kv_id=([^;]+)')||[])[2],
-      partner_slug:(document.cookie.match('(^|;)\\s*kv_partner=([^;]+)')||[])[2],
-      page:'/checkout/complete', event:'purchase'
-    })}).catch(function(){});
-</script>
-{% endif %}`}</pre>
-                    <button onClick={()=>navigator.clipboard.writeText(`{% comment %} order-status.liquid {% endcomment %}\n{% if first_time_accessed %}\n<script>\n  fetch('/api/beacon',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({visitor_id:(document.cookie.match('(^|;)\\s*kv_id=([^;]+)')||[])[2],partner_slug:(document.cookie.match('(^|;)\\s*kv_partner=([^;]+)')||[])[2],page:'/checkout/complete',event:'purchase'})}).catch(function(){});\n</script>\n{% endif %}`)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{orderStatusSnippet}</pre>
+                    <button onClick={()=>copyToClipboard(orderStatusSnippet)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
                   </div>
                 </div>
               )}
@@ -285,7 +328,8 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
                   Go to <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>Appearance → Theme Editor → footer.php</code><br/>
                   Paste the main script just before <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>{'</body>'}</code>.<br/><br/>
                   <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Option B — Plugin (easier, no code editing)</strong>
-                  Install the <em>Insert Headers and Footers</em> plugin → paste the script in the <strong>Footer</strong> section. Saves and applies to all pages automatically.
+                  Install the <em>Insert Headers and Footers</em> plugin → paste the script in the <strong>Footer</strong> section. Saves and applies to all pages automatically.<br/>
+                  <span style={{ color:'var(--text-dim)', fontSize:11 }}>For sale attribution on WooCommerce, use the order webhook in Step 3.</span>
                 </div>
               )}
 
@@ -300,40 +344,11 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
                   <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.9, marginBottom:8 }}>
                     <strong style={{ color:'var(--text-secondary)', display:'block', marginBottom:2 }}>Step 2 — Conversion tracking (no checkout needed)</strong>
                     Call <code style={{ background:'var(--surface2)', padding:'1px 5px', borderRadius:3, fontSize:11 }}>mkConvert()</code> whenever your meaningful action happens — form submit, sign-up, demo request, trial activation. This replaces the order webhook entirely.<br/>
-                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Optionally pass a lead value in ₹ (e.g. your CRM value per lead). Leave 0 if unknown.</span>
+                    <span style={{ color:'var(--text-dim)', fontSize:11 }}>Optionally pass a lead value (e.g. your CRM value per lead). Leave 0 if unknown.</span>
                   </div>
                   <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 12px', marginBottom:12 }}>
-                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.6 }}>{`<!-- Conversion helper — paste once anywhere on your site -->
-<script>
-function mkConvert(leadValue) {
-  function gc(n){var m=document.cookie.match('(^|;)\\s*'+n+'=([^;]+)');return m?m[2]:null}
-  fetch('/api/beacon', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      visitor_id:   gc('kv_id'),
-      partner_slug: gc('kv_partner'),
-      page:         window.location.pathname,
-      event:        'lead',
-      order_value:  leadValue || 0
-    })
-  }).catch(function(){});
-}
-</script>
-
-<!-- Then call it wherever your conversion happens: -->
-
-<!-- Form submit button -->
-<button onclick="mkConvert(0)">Submit</button>
-
-<!-- After successful API call (e.g. sign-up) -->
-yourSignupApi().then(function(r) {
-  if (r.ok) mkConvert(2500); // optional: ₹2500 CRM value per lead
-});
-
-<!-- Demo / contact click -->
-<a href="/demo" onclick="mkConvert(5000)">Book a demo</a>`}</pre>
-                    <button onClick={()=>navigator.clipboard.writeText(`<!-- Conversion helper -->\n<script>\nfunction mkConvert(leadValue) {\n  function gc(n){var m=document.cookie.match('(^|;)\\\\s*'+n+'=([^;]+)');return m?m[2]:null}\n  fetch('/api/beacon', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      visitor_id:   gc('kv_id'),\n      partner_slug: gc('kv_partner'),\n      page:         window.location.pathname,\n      event:        'lead',\n      order_value:  leadValue || 0\n    })\n  }).catch(function(){});\n}\n</script>`)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.6 }}>{customConvertSnippet}</pre>
+                    <button onClick={()=>copyToClipboard(customConvertSnippet)} style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
                   </div>
                   <div style={{ padding:'10px 14px', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:8, fontSize:11, color:'var(--text-dim)', lineHeight:1.7 }}>
                     <strong style={{ color:'var(--text-secondary)' }}>What you can track without a checkout:</strong><br/>
@@ -343,13 +358,13 @@ yourSignupApi().then(function(r) {
                 </div>
               )}
 
-              {/* Main snippet — same for all platforms */}
+              {/* Main snippet — platform-aware */}
               <div style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)', marginBottom:6 }}>
                 Main tracking script — paste in {trackingPlatform==='shopify'?'theme.liquid before </body>':trackingPlatform==='woo'?'footer.php before </body>':'your master layout before </body>'}
               </div>
               <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
-                <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-all', lineHeight:1.5, maxHeight:140, overflow:'auto' }}>{snippet}</pre>
-                <button onClick={()=>{navigator.clipboard.writeText(snippet);setCopied(true);setTimeout(()=>setCopied(false),2000)}}
+                <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', wordBreak:'break-all', lineHeight:1.5, maxHeight:160, overflow:'auto' }}>{snippet}</pre>
+                <button onClick={()=>{copyToClipboard(snippet);setCopied(true);setTimeout(()=>setCopied(false),2000)}}
                   style={{ position:'absolute', top:8, right:8, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'3px 8px', fontSize:10, cursor:'pointer' }}>
                   {copied?'✓ Copied':'Copy'}
                 </button>
@@ -383,21 +398,27 @@ yourSignupApi().then(function(r) {
           {cur==='webhook'&&(
             <div>
               <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:14 }}>
-                Add this webhook in your store admin so MicroKorant knows when a purchase happens.
+                Add this webhook in your store admin so MicroKorant is notified when a purchase happens. This is what attributes the sale and its commission to the right partner.
               </p>
               <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'14px 16px', marginBottom:14 }}>
                 <div style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-dim)', marginBottom:8 }}>Endpoint URL</div>
-                <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', marginBottom:14 }}>
-                  https://www.microkorant.in/api/webhook/orders
+                <div style={{ position:'relative', marginBottom:14 }}>
+                  <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54 }}>
+                    {`${BASE_URL}/api/webhook/shopify`}
+                  </div>
+                  <button onClick={()=>copyToClipboard(`${BASE_URL}/api/webhook/shopify`)} style={{ position:'absolute', top:-2, right:0, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
                 </div>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:12 }}>
-                  {[['Shopify','Settings → Notifications → Webhooks'],['WooCommerce','WooCommerce → Settings → Advanced → Webhooks'],['Event','orders/paid'],['Format','JSON']].map(([k,v],i)=>(
+                  {[['Shopify','Settings → Notifications → Webhooks'],['WooCommerce','WooCommerce → Settings → Advanced → Webhooks'],['Event','Order payment (orders/paid)'],['Format','JSON']].map(([k,v],i)=>(
                     <div key={i} style={{ background:'var(--surface)', borderRadius:5, padding:'8px 10px' }}>
                       <div style={{ color:'var(--text-dim)', fontSize:10, marginBottom:2 }}>{k}</div>
                       <div style={{ color:'var(--text-secondary)', fontSize:11 }}>{v}</div>
                     </div>
                   ))}
                 </div>
+              </div>
+              <div style={{ padding:'10px 14px', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:8, fontSize:11, color:'var(--text-dim)', lineHeight:1.7, marginBottom:4 }}>
+                <strong style={{ color:'var(--text-secondary)' }}>One-time setup with your account manager:</strong> after you create the webhook, send us your <strong>store domain</strong> (the <code style={{ background:'var(--surface2)', padding:'1px 4px', borderRadius:3 }}>.myshopify.com</code> address) and the webhook <strong>signing secret</strong> shown on the Notifications page. We add them to your account so we can verify and accept your orders.
               </div>
               <CheckBanner/>
               <div style={{ display:'flex', gap:8, marginTop:14, flexWrap:'wrap', alignItems:'center' }}>
