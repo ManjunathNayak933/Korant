@@ -17,8 +17,12 @@ export async function POST(req: NextRequest) {
   const role     = req.headers.get('x-user-role')
   if (!clientId || role !== 'client') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const { affiliateId, month } = await req.json()
-  if (!affiliateId) return NextResponse.json({ error: 'affiliateId required' }, { status: 400 })
+  const body = await req.json()
+  const { affiliateId, influencerId, month, includeFee } = body
+  if (!affiliateId && !influencerId) return NextResponse.json({ error: 'affiliateId or influencerId required' }, { status: 400 })
+  if (affiliateId && influencerId)   return NextResponse.json({ error: 'Pass only one of affiliateId / influencerId' }, { status: 400 })
+  const isInfluencer = !!influencerId
+  const partnerId    = (influencerId || affiliateId) as string
 
   // Work in IST (Asia/Kolkata) so a payout "for June" covers the Indian calendar
   // month and matches how clicks/sales are bucketed in the DB. formatToParts is
@@ -55,20 +59,21 @@ export async function POST(req: NextRequest) {
 
   const sb = getSupabaseAdmin()
 
-  const { data: affiliate, error: affErr } = await sb
-    .from('affiliates')
-    .select('id, name, handle, commission_type, commission_value, client_id, created_at')
-    .eq('id', affiliateId)
+  const table = isInfluencer ? 'influencers' : 'affiliates'
+  const { data: partner, error: pErr } = await sb
+    .from(table)
+    .select('id, name, handle, commission_type, commission_value, client_id, created_at' + (isInfluencer ? ', fee' : ''))
+    .eq('id', partnerId)
     .eq('client_id', clientId)
     .single()
 
-  if (affErr || !affiliate) return NextResponse.json({ error: 'Affiliate not found' }, { status: 404 })
+  if (pErr || !partner) return NextResponse.json({ error: `${isInfluencer ? 'Influencer' : 'Affiliate'} not found` }, { status: 404 })
 
   // ── Fetch sales in the period ──────────────────────────────────────────
   const { data: events } = await sb
     .from('events')
     .select('type, order_value, commission_amount')
-    .eq('affiliate_id', affiliateId)
+    .eq(isInfluencer ? 'influencer_id' : 'affiliate_id', partnerId)
     .eq('client_id',    clientId)
     .in('type', ['code_sale', 'cookie_sale'])
     .is('reversed_at', null) // exclude refunded / cancelled sales
@@ -81,33 +86,41 @@ export async function POST(req: NextRequest) {
     if (e.commission_amount) return s + e.commission_amount
     // Fallback when a sale row has no precomputed commission_amount: mirror the
     // attribution math — flat = fixed value, percentage = order_value * value / 100.
-    const v = affiliate.commission_value || 0
-    return s + (affiliate.commission_type === 'flat' ? v : (e.order_value || 0) * v / 100)
+    const v = partner.commission_value || 0
+    return s + (partner.commission_type === 'flat' ? v : (e.order_value || 0) * v / 100)
   }, 0)
 
-  if (salesCount === 0) {
+  // Influencers can also carry a flat retainer (`fee`). Include it once per
+  // generated payout unless the caller opts out (includeFee === false) — useful
+  // for a recurring monthly commission run that must not re-charge a one-time fee.
+  const fee    = isInfluencer && includeFee !== false ? (Number((partner as any).fee) || 0) : 0
+  const amount = Math.round((commission + fee) * 100) / 100
+
+  if (salesCount === 0 && amount === 0) {
     return NextResponse.json({
       error:        `No sales found for ${selected}${selected === currentMonth ? ` (up to ${periodEnd})` : ''}`,
-      affiliate:    affiliate.name,
+      partner:      partner.name,
       periodStart,  periodEnd,
     }, { status: 400 })
   }
 
   // ── UPSERT — regenerating same month updates the record ───────────────
-  // onConflict requires the unique constraint: (client_id, affiliate_id, period_start)
+  const idCols    = isInfluencer ? { influencer_id: partnerId } : { affiliate_id: partnerId }
+  const onConflict = isInfluencer ? 'client_id,influencer_id,period_start' : 'client_id,affiliate_id,period_start'
+
   const { data: payout, error: payErr } = await sb
     .from('payouts')
     .upsert({
       client_id:    clientId,
-      affiliate_id: affiliateId,
+      ...idCols,
       period_start: periodStart,
       period_end:   periodEnd,
       sales_count:  salesCount,
       revenue:      totalRevenue,
-      amount:       Math.round(commission * 100) / 100,
+      amount,
       status:       'pending',
       generated_at: new Date().toISOString(),
-    }, { onConflict: 'client_id,affiliate_id,period_start' })
+    }, { onConflict })
     .select()
     .single()
 
@@ -116,14 +129,17 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     payout,
     summary: {
-      affiliate:     affiliate.name,
+      partner:       partner.name,
+      kind:          isInfluencer ? 'influencer' : 'affiliate',
       month:         selected,
       periodStart,
       periodEnd,
       isFull:        selected !== currentMonth,
       salesCount,
       revenue:       totalRevenue,
-      commission:    payout.amount,
+      fee,
+      commission:    Math.round(commission * 100) / 100,
+      amount:        payout.amount,
       note:          selected === currentMonth
         ? `Covers ${periodStart} to ${periodEnd} (partial month — today)`
         : `Covers full month: ${periodStart} to ${periodEnd}`,
