@@ -20,6 +20,8 @@ interface InfluencerMetrics {
   codeRedemptions: number
   cookieSales: number
   avgCostPerClick: number
+  commissionEarned?: number
+  totalCost?: number
   lastClickAt?: string | null
   topCity?: string | null
   topReferrer?: string | null
@@ -42,9 +44,15 @@ function isInactive(lastClickAt?: string | null): boolean {
   const diff = (Date.now() - new Date(lastClickAt).getTime()) / (1000 * 60 * 60 * 24)
   return diff >= INACTIVE_DAYS
 }
-function calcROI(revenue: number, fee: number): number | null {
-  if (!fee || fee === 0) return null
-  return Math.round(((revenue - fee) / fee) * 100)
+// ROI is measured against the TRUE spend on a partner: retainer + commission paid.
+function calcROI(revenue: number, cost: number): number | null {
+  if (!cost || cost === 0) return null
+  return Math.round(((revenue - cost) / cost) * 100)
+}
+// Total spend on an influencer = flat fee + commission earned this period.
+function totalSpend(inf: { fee?: number }, m?: { totalCost?: number; commissionEarned?: number }): number {
+  if (m && typeof m.totalCost === 'number') return m.totalCost
+  return (Number(inf.fee) || 0) + (Number(m?.commissionEarned) || 0)
 }
 
 export default function InfluencerChannelView({ clientId, campaigns, baseUrl, month, onCampaignAdd, prefill }: Props) {
@@ -128,8 +136,8 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
     if (sort === 'sales')   return (mb.totalSales || 0) - (ma.totalSales || 0)
     if (sort === 'revenue') return (mb.revenueAttributed || 0) - (ma.revenueAttributed || 0)
     if (sort === 'roi') {
-      const roiA = calcROI(ma.revenueAttributed || 0, a.fee) ?? -Infinity
-      const roiB = calcROI(mb.revenueAttributed || 0, b.fee) ?? -Infinity
+      const roiA = calcROI(ma.revenueAttributed || 0, totalSpend(a, ma)) ?? -Infinity
+      const roiB = calcROI(mb.revenueAttributed || 0, totalSpend(b, mb)) ?? -Infinity
       return roiB - roiA
     }
     return 0
@@ -222,14 +230,18 @@ export default function InfluencerChannelView({ clientId, campaigns, baseUrl, mo
                 {/* ROI card */}
                 {(() => {
                   const m = (metrics[inf.id] || {}) as InfluencerMetrics
-                  const roi = calcROI(m.revenueAttributed || 0, inf.fee)
+                  const spend = totalSpend(inf, m)
+                  const roi = calcROI(m.revenueAttributed || 0, spend)
                   if (roi === null) return null
                   const roiColor = roi >= 0 ? '#2ecc71' : '#e74c3c'
+                  const comm = Number(m.commissionEarned) || 0
                   return (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: roi >= 0 ? 'rgba(46,204,113,0.07)' : 'rgba(231,76,60,0.07)', border: `0.5px solid ${roi >= 0 ? 'rgba(46,204,113,0.25)' : 'rgba(231,76,60,0.25)'}`, borderRadius: 5, padding: '6px 10px', marginBottom: 8 }}>
                       <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>ROI</span>
                       <span style={{ fontSize: 14, fontWeight: 600, color: roiColor }}>{roi >= 0 ? '+' : ''}{roi}%</span>
-                      <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>₹{(inf.fee||0).toLocaleString('en-IN')} spent</span>
+                      <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>
+                        ₹{spend.toLocaleString('en-IN')} spent{comm > 0 ? ` (₹${(Number(inf.fee)||0).toLocaleString('en-IN')} fee + ₹${comm.toLocaleString('en-IN')} comm)` : ''}
+                      </span>
                     </div>
                   )
                 })()}
