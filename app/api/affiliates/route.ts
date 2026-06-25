@@ -10,6 +10,7 @@ import { ensureUniqueSlug } from '@/lib/tracking'
 import { checkPlanLimit } from '@/lib/planLimits'
 import { createShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
 import { createRazorpayOffer } from '@/lib/razorpay'
+import { findDiscountCodeOwner, codeConflictMessage } from '@/lib/codes'
 
 export async function GET(request: NextRequest) {
   const role = request.headers.get('x-user-role')!
@@ -73,6 +74,12 @@ export async function POST(request: NextRequest) {
   const slugBase = body.handle.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
   const redirect_slug = await ensureUniqueSlug(`aff-${slugBase}`)
   const discountCode = body.discount_code?.toUpperCase() || null
+
+  // Block a code already owned by another asset for this client.
+  if (discountCode) {
+    const owner = await findDiscountCodeOwner(clientId, discountCode)
+    if (owner) return NextResponse.json({ error: codeConflictMessage(discountCode, owner) }, { status: 409 })
+  }
 
   const { data, error } = await sb
     .from('affiliates')
