@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { createShopifyDiscountCode, updateShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
 import { invalidateLink } from '@/lib/links'
+import { findDiscountCodeOwner, codeConflictMessage } from '@/lib/codes'
 
 async function getOwnedInfluencer(id: string, role: string, userId: string) {
   const sb = getSupabaseAdmin()
@@ -42,10 +43,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const sb = getSupabaseAdmin()
   const body = await request.json()
-  const allowed = ['name', 'handle', 'social_platform', 'social_url', 'fee', 'destination_url', 'discount_code', 'is_active', 'campaign_id']
+  const allowed = ['name', 'handle', 'social_platform', 'social_url', 'fee', 'destination_url', 'discount_code', 'is_active', 'campaign_id', 'commission_type', 'commission_value', 'commission_trigger']
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
   for (const key of allowed) {
     if (key in body) updates[key] = body[key]
+  }
+
+  // Keep commission fields internally consistent: a positive value implies a
+  // 'per_sale' trigger unless explicitly set; a zero/blank value disables it.
+  if ('commission_value' in body || 'commission_type' in body || 'commission_trigger' in body) {
+    const value = Number(updates.commission_value ?? existing.commission_value) || 0
+    updates.commission_value = value
+    if ('commission_type' in updates) updates.commission_type = updates.commission_type === 'flat' ? 'flat' : 'percentage'
+    updates.commission_trigger = value > 0 ? ((updates.commission_trigger as string) || existing.commission_trigger || 'per_sale') : 'none'
   }
 
   // BUG FIX: a discount-code change must propagate to Shopify, or the store and
@@ -53,6 +63,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if ('discount_code' in body) {
     const newCode = body.discount_code ? String(body.discount_code).toUpperCase() : null
     updates.discount_code = newCode
+    // Reject a code already owned by a different asset for this client.
+    if (newCode) {
+      const owner = await findDiscountCodeOwner(existing.client_id, newCode, { table: 'influencers', id })
+      if (owner) return NextResponse.json({ error: codeConflictMessage(newCode, owner) }, { status: 409 })
+    }
     try {
       if (newCode) {
         if (existing.shopify_price_rule_id) {
