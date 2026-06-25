@@ -41,7 +41,8 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
     name: prefill?.name || '', handle: prefill?.handle || '',
     social_platform: prefill?.platform || 'instagram',
     social_url: prefill?.social_url || '',
-    destination_url: '', discount_code: '', fee: '', campaign_id: ''
+    destination_url: '', discount_code: '', fee: '', campaign_id: '',
+    commission_type: 'percentage', commission_value: ''
   })
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
@@ -88,7 +89,7 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
         const res = await fetch('/api/influencers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...form, clientId, fee: parseFloat(form.fee) || 0 }),
+          body: JSON.stringify({ ...form, clientId, fee: parseFloat(form.fee) || 0, commission_value: parseFloat(form.commission_value) || 0 }),
         })
         const data = await res.json()
         if (!res.ok) { setError(data.error || 'Failed'); setLoading(false); return }
@@ -98,7 +99,7 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
       const res = await fetch('/api/influencers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, clientId, fee: parseFloat(form.fee) || 0 }),
+        body: JSON.stringify({ ...form, clientId, fee: parseFloat(form.fee) || 0, commission_value: parseFloat(form.commission_value) || 0 }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Failed'); setLoading(false); return }
@@ -230,6 +231,18 @@ export default function AddInfluencerModal({ clientId, campaigns, onClose, onCre
               <FormField label="Fee (₹)">
                 <Input type="number" value={form.fee} onChange={e => set('fee', e.target.value)} placeholder="0" />
               </FormField>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <FormField label="Commission type">
+                <Select value={form.commission_type} onChange={e => set('commission_type', e.target.value)}
+                  options={[{ value: 'percentage', label: '% of sale' }, { value: 'flat', label: 'Flat ₹ / sale' }]} />
+              </FormField>
+              <FormField label={form.commission_type === 'flat' ? 'Commission (₹ / sale)' : 'Commission (% of sale)'}>
+                <Input type="number" value={form.commission_value} onChange={e => set('commission_value', e.target.value)} placeholder="0" />
+              </FormField>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: -4, marginBottom: 4 }}>
+              Optional — paid on every attributed sale, on top of the fee. Leave at 0 for fee-only.
             </div>
           </>
         )}
