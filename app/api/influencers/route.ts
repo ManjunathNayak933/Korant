@@ -10,6 +10,7 @@ import { ensureUniqueSlug } from '@/lib/tracking'
 import { checkPlanLimit } from '@/lib/planLimits'
 import { createShopifyDiscountCode } from '@/lib/shopify'
 import { createRazorpayOffer } from '@/lib/razorpay'
+import { findDiscountCodeOwner, codeConflictMessage } from '@/lib/codes'
 
 export async function GET(request: NextRequest) {
   const role = request.headers.get('x-user-role')!
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
   const sb = getSupabaseAdmin()
   let query = sb
     .from('influencers')
-    .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, is_active, campaign_id, created_at, influencer_campaigns(campaign_id)')
+    .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, commission_type, commission_value, commission_trigger, is_active, campaign_id, created_at, influencer_campaigns(campaign_id)')
     .eq('client_id', clientId)
     .order('created_at', { ascending: false })
 
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest) {
     // the returned object is a complete influencer.
     const { data: full } = await sb
       .from('influencers')
-      .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, is_active, campaign_id, created_at')
+      .select('id, name, handle, social_platform, social_url, fee, destination_url, redirect_slug, discount_code, commission_type, commission_value, commission_trigger, is_active, campaign_id, created_at')
       .eq('id', existing.id)
       .single()
     return NextResponse.json({ ...(full || existing), _existed: true }, { status: 200 })
@@ -96,6 +97,19 @@ export async function POST(request: NextRequest) {
   const redirect_slug = await ensureUniqueSlug(slugBase)
 
   const discountCode = body.discount_code?.toUpperCase() || null
+
+  // Block a code already owned by another asset (influencer / affiliate / WA campaign)
+  // for this client — a shared code would make checkout attribution ambiguous.
+  if (discountCode) {
+    const owner = await findDiscountCodeOwner(clientId, discountCode)
+    if (owner) return NextResponse.json({ error: codeConflictMessage(discountCode, owner) }, { status: 409 })
+  }
+
+  // Commission is optional and defaults to 0 → influencer keeps earning only the
+  // flat fee unless a value is set. 'flat' = fixed ₹ per sale, else percentage.
+  const commissionValue = Number(body.commission_value) || 0
+  const commissionType  = body.commission_type === 'flat' ? 'flat' : 'percentage'
+  const commissionTrigger = commissionValue > 0 ? (body.commission_trigger || 'per_sale') : 'none'
 
   const { data, error } = await sb
     .from('influencers')
@@ -110,6 +124,9 @@ export async function POST(request: NextRequest) {
       destination_url: body.destination_url,
       redirect_slug,
       discount_code: discountCode,
+      commission_type: commissionType,
+      commission_value: commissionValue,
+      commission_trigger: commissionTrigger,
       created_by: role,
     })
     .select()
