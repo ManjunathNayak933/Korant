@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { createShopifyDiscountCode, updateShopifyDiscountCode, deleteShopifyPriceRule } from '@/lib/shopify'
 import { invalidateLink } from '@/lib/links'
+import { findDiscountCodeOwner, codeConflictMessage } from '@/lib/codes'
 
 // Helper: verify the requesting user owns this affiliate (or is admin/agency)
 async function getOwnedAffiliate(id: string, role: string, userId: string) {
@@ -64,6 +65,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if ('discount_code' in body) {
     const newCode = body.discount_code ? String(body.discount_code).toUpperCase() : null
     updates.discount_code = newCode
+    if (newCode) {
+      const owner = await findDiscountCodeOwner(existing.client_id, newCode, { table: 'affiliates', id })
+      if (owner) return NextResponse.json({ error: codeConflictMessage(newCode, owner) }, { status: 409 })
+    }
     try {
       if (newCode) {
         if (existing.shopify_price_rule_id) {
