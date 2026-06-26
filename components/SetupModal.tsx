@@ -31,6 +31,7 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   const [urlCopied,   setUrlCopied]   = useState(false)
   const [connecting,  setConnecting]  = useState(false)
   const [showReconnect, setShowReconnect] = useState(false)
+  const [showManual, setShowManual] = useState(false)
 
   useEffect(() => { setCheckResult(null); setConfirmStep(null) }, [page])
 
@@ -231,13 +232,13 @@ yourSignupApi().then(function(r) {
   const PAGE_TITLES: Record<string, string> = {
     domain:   'Custom tracking domain',
     tracking: 'Store tracking script',
-    webhook:  'Order webhook',
+    webhook:  'Connect Shopify',
     extras:   'WhatsApp & Analytics',
   }
   const PAGE_SUBS: Record<string, string> = {
     domain:   'CNAME setup — optional but professional',
     tracking: 'Beacon + attribution — one snippet does both',
-    webhook:  'Sale attribution — so orders reach MicroKorant',
+    webhook:  'One click — sales tracking + discount codes',
     extras:   'Optional integrations',
   }
 
@@ -428,74 +429,29 @@ yourSignupApi().then(function(r) {
           {cur==='webhook'&&(
             <div>
               <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:16 }}>
-                Just one step: copy your tracking link below, then paste it into Shopify. That's what lets us see your sales and credit the right partner. Takes about two minutes.
+                One click connects your store. It sets up everything — we see your sales (to credit the right partner) and create your discount codes for you. You approve once on Shopify and you're back here.
               </p>
 
-              {/* Step 1 — copy the link */}
-              <div style={{ display:'flex', gap:10, marginBottom:14 }}>
-                <div style={{ flexShrink:0, width:22, height:22, borderRadius:11, background:'var(--amber)', color:'#0d0d0d', fontSize:12, fontWeight:600, display:'flex', alignItems:'center', justifyContent:'center' }}>1</div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, color:'var(--text-secondary)', fontWeight:500, marginBottom:8 }}>Copy your tracking link</div>
-                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px' }}>
-                    <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
-                      {conn?.webhook_url || 'Loading your link…'}
-                    </div>
-                    <button onClick={()=>{ if(conn?.webhook_url){ copyToClipboard(conn.webhook_url); setUrlCopied(true); setTimeout(()=>setUrlCopied(false),2000) } }}
-                      style={{ position:'absolute', top:9, right:9, background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
-                      {urlCopied ? '✓ Copied' : 'Copy'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 2 — paste into Shopify */}
-              <div style={{ display:'flex', gap:10, marginBottom:14 }}>
-                <div style={{ flexShrink:0, width:22, height:22, borderRadius:11, background:'var(--amber)', color:'#0d0d0d', fontSize:12, fontWeight:600, display:'flex', alignItems:'center', justifyContent:'center' }}>2</div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, color:'var(--text-secondary)', fontWeight:500, marginBottom:6 }}>Add it in Shopify</div>
-                  <div style={{ fontSize:12.5, color:'var(--text-muted)', lineHeight:1.85 }}>
-                    In your Shopify admin, go to <strong style={{ color:'var(--text-secondary)' }}>Settings → Notifications → Webhooks</strong>, then click <strong style={{ color:'var(--text-secondary)' }}>Create webhook</strong> and fill in:
-                  </div>
-                  <div style={{ marginTop:8, display:'grid', gridTemplateColumns:'auto 1fr', gap:'6px 14px', fontSize:12.5, alignItems:'baseline' }}>
-                    <div style={{ color:'var(--text-dim)' }}>Event</div><div style={{ color:'var(--text-secondary)' }}>Order payment</div>
-                    <div style={{ color:'var(--text-dim)' }}>Format</div><div style={{ color:'var(--text-secondary)' }}>JSON</div>
-                    <div style={{ color:'var(--text-dim)' }}>URL</div><div style={{ color:'var(--text-secondary)' }}>paste the link you copied</div>
-                  </div>
-                  <div style={{ fontSize:12.5, color:'var(--text-muted)', lineHeight:1.85, marginTop:8 }}>
-                    Click <strong style={{ color:'var(--text-secondary)' }}>Save</strong>. (On WooCommerce: Settings → Advanced → Webhooks.)
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 3 — done */}
-              <div style={{ display:'flex', gap:10, marginBottom:14 }}>
-                <div style={{ flexShrink:0, width:22, height:22, borderRadius:11, background:'#4a7c3f', color:'#fff', fontSize:12, fontWeight:600, display:'flex', alignItems:'center', justifyContent:'center' }}>✓</div>
-                <div style={{ flex:1, paddingTop:2 }}>
-                  <div style={{ fontSize:13, color:'var(--text-secondary)', fontWeight:500 }}>That's it — your sales now track automatically</div>
-                  <div style={{ fontSize:12, color:'var(--text-dim)', marginTop:2, lineHeight:1.6 }}>
-                    Use the button below to check it's working once you've placed a test order.
-                  </div>
-                </div>
-              </div>
-
-              {/* Auto-create discount codes — one-click Shopify connect (OAuth) */}
-              <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'14px 16px', marginBottom:14 }}>
-                <div style={{ fontSize:13, color:'var(--text-secondary)', fontWeight:500, marginBottom:2 }}>
-                  Auto-create discount codes{conn?.has_shopify_token && <span style={{ color:'#4a7c3f', fontWeight:400 }}> · connected ✓</span>}
-                </div>
-
+              {/* Connect Shopify — the single primary action (sales + codes) */}
+              <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'16px', marginBottom:14 }}>
                 {conn?.has_shopify_token ? (
-                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7 }}>
-                    Your store{conn.shopify_domain ? <> (<span style={{ fontFamily:'var(--font-mono)' }}>{conn.shopify_domain}</span>)</> : ''} is connected. Every partner code you create in MicroKorant is now created in Shopify automatically.
-                    <div style={{ marginTop:8 }}>
-                      <button onClick={()=>setShowReconnect(v=>!v)} style={{ background:'transparent', border:'none', color:'var(--text-dim)', fontSize:11, cursor:'pointer', padding:0, textDecoration:'underline' }}>
-                        Reconnect a different store
-                      </button>
+                  <div>
+                    <div style={{ fontSize:13, color:'#4a7c3f', fontWeight:500, marginBottom:4 }}>✓ Connected{conn.shopify_domain ? <> · <span style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)', fontWeight:400 }}>{conn.shopify_domain}</span></> : ''}</div>
+                    <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7 }}>
+                      We're receiving your orders and creating your discount codes automatically. Nothing else to do.
+                      <div style={{ marginTop:8 }}>
+                        <button onClick={()=>setShowReconnect(v=>!v)} style={{ background:'transparent', border:'none', color:'var(--text-dim)', fontSize:11, cursor:'pointer', padding:0, textDecoration:'underline' }}>
+                          Connect a different store
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : (
-                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7, marginBottom:12 }}>
-                    Connect your store and MicroKorant creates each partner's discount code in Shopify for you — no copying codes by hand. One click; you approve on Shopify and you're back here.
+                  <div>
+                    <div style={{ fontSize:14, color:'var(--text-primary)', fontWeight:500, marginBottom:4 }}>Connect your Shopify store</div>
+                    <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7, marginBottom:12 }}>
+                      Sets up sale tracking and automatic discount codes together — no copying links or codes by hand.
+                    </div>
                   </div>
                 )}
 
@@ -507,15 +463,35 @@ yourSignupApi().then(function(r) {
                     <input value={shopDomain} onChange={e=>setShopDomain(e.target.value)}
                       onKeyDown={e=>{ if(e.key==='Enter') connectShopify() }}
                       placeholder="yourstore.myshopify.com"
-                      style={{ width:'100%', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'9px 13px', fontSize:13, color:'var(--text-primary)', fontFamily:'var(--font-mono)', outline:'none', marginBottom:10 }}/>
+                      style={{ width:'100%', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'10px 13px', fontSize:13, color:'var(--text-primary)', fontFamily:'var(--font-mono)', outline:'none', marginBottom:10 }}/>
                     <Btn primary disabled={connecting || !shopDomain.trim()} onClick={connectShopify} label={connecting ? 'Opening Shopify…' : 'Connect Shopify'}/>
                   </div>
                 )}
-
-                <div style={{ marginTop:10, fontSize:11, color:'var(--text-dim)', lineHeight:1.6 }}>
-                  Optional — sale tracking above works without this. Skip it and your codes are saved in MicroKorant; you'd just add each one in your Shopify Discounts page.
-                </div>
               </div>
+
+              {/* Manual fallback — collapsed. For stores that don't connect the app. */}
+              <button onClick={()=>setShowManual(v=>!v)}
+                style={{ width:'100%', textAlign:'left', background:'transparent', border:'0.5px dashed var(--border2)', borderRadius:8, padding:'10px 14px', cursor:'pointer', color:'var(--text-dim)', fontSize:12, display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:showManual?10:0 }}>
+                <span>Can't connect? Set up sale tracking manually instead</span>
+                <span style={{ fontSize:11 }}>{showManual ? '▲ hide' : '▼ show'}</span>
+              </button>
+
+              {showManual && (
+                <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'14px 16px', marginBottom:14 }}>
+                  <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7, marginBottom:12 }}>
+                    This tracks sales only (no auto-codes). Copy the link, then in Shopify go to <strong style={{ color:'var(--text-secondary)' }}>Settings → Notifications → Webhooks → Create webhook</strong>, set Event = <strong style={{ color:'var(--text-secondary)' }}>Order payment</strong>, Format = <strong style={{ color:'var(--text-secondary)' }}>JSON</strong>, paste the link, and Save.
+                  </div>
+                  <div style={{ position:'relative', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px' }}>
+                    <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
+                      {conn?.webhook_url || 'Loading your link…'}
+                    </div>
+                    <button onClick={()=>{ if(conn?.webhook_url){ copyToClipboard(conn.webhook_url); setUrlCopied(true); setTimeout(()=>setUrlCopied(false),2000) } }}
+                      style={{ position:'absolute', top:9, right:9, background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
+                      {urlCopied ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+              )}
               <CheckBanner/>
               <div style={{ display:'flex', gap:8, marginTop:14, flexWrap:'wrap', alignItems:'center' }}>
                 <Btn primary disabled={checking} onClick={()=>verify('webhook')}
