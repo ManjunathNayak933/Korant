@@ -23,7 +23,28 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   const [trackingPlatform, setTrackingPlatform] = useState<'shopify'|'woo'|'custom'>('shopify')
   const [confirmStep, setConfirmStep] = useState<string | null>(null)
 
+  // Step 3: a ready-to-paste webhook URL (cid + key baked in) plus an OPTIONAL
+  // Admin API token for auto-creating coupon codes. No secret to invent, and no
+  // domain to type — the webhook URL identifies the client; the domain is
+  // auto-captured from the first order.
+  const [shopDomain,  setShopDomain]  = useState('')
+  const [shopToken,   setShopToken]   = useState('')
+  const [conn,        setConn]        = useState<{ webhook_url?: string; has_shopify_domain?: boolean; has_shopify_token?: boolean; shopify_domain?: string } | null>(null)
+  const [savingCreds, setSavingCreds] = useState(false)
+  const [credsMsg,    setCredsMsg]    = useState<{ ok: boolean; msg: string } | null>(null)
+  const [urlCopied,   setUrlCopied]   = useState(false)
+
   useEffect(() => { setCheckResult(null); setConfirmStep(null) }, [page])
+
+  // Load the pre-filled webhook URL + connection status. The integrations
+  // endpoint generates the per-client key on first call, so the URL is ready
+  // to copy with no action from the customer.
+  useEffect(() => {
+    fetch('/api/clients/integrations').then(r => r.json()).then((d) => {
+      setConn(d)
+      if (d?.shopify_domain) setShopDomain(d.shopify_domain)
+    }).catch(() => {})
+  }, [])
 
   // ── Live endpoints ────────────────────────────────────────────────────
   // The beacon + webhook live on the MicroKorant origin, NOT the merchant's
@@ -94,6 +115,40 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
     persist({ ...ob, [doneK]: false, [skipK]: false, [verK]: false })
     setCheckResult(null)
     setConfirmStep(null)
+  }
+
+  // Save the OPTIONAL Shopify token (and domain, if the customer typed one
+  // before their first order auto-captured it). Sales tracking needs none of
+  // this — it works from the webhook URL alone. This is only for auto-codes.
+  const saveCreds = async () => {
+    setSavingCreds(true)
+    setCredsMsg(null)
+    const payload: Record<string, string> = {}
+    if (shopToken.trim())  payload.shopify_token  = shopToken.trim()
+    if (shopDomain.trim()) payload.shopify_domain = shopDomain.trim()
+    if (Object.keys(payload).length === 0) {
+      setCredsMsg({ ok: false, msg: 'Paste your Admin API token to enable auto-created codes.' })
+      setSavingCreds(false)
+      return
+    }
+    try {
+      const res = await fetch(`/api/clients/${user.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setCredsMsg({ ok: false, msg: d.error || 'Could not save. Please try again.' })
+      } else {
+        setCredsMsg({ ok: true, msg: 'Saved — auto-created codes are on.' })
+        setShopToken('') // clear the token input after a successful save
+        const fresh = await fetch('/api/clients/integrations').then(r => r.json()).catch(() => null)
+        if (fresh) { setConn(fresh); if (fresh.shopify_domain) setShopDomain(fresh.shopify_domain) }
+      }
+    } catch {
+      setCredsMsg({ ok: false, msg: 'Network error. Please try again.' })
+    }
+    setSavingCreds(false)
   }
 
   // ── Snippet builder ───────────────────────────────────────────────────
@@ -398,27 +453,75 @@ yourSignupApi().then(function(r) {
           {cur==='webhook'&&(
             <div>
               <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:14 }}>
-                Add this webhook in your store admin so MicroKorant is notified when a purchase happens. This is what attributes the sale and its commission to the right partner.
+                Copy the URL below and add it as a webhook in your store admin. That's the whole connection — it's already personalised to your account, so there's nothing to fill in for sale tracking.
               </p>
+
+              {/* Pre-filled webhook URL — the only thing needed for sale tracking */}
               <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'14px 16px', marginBottom:14 }}>
-                <div style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-dim)', marginBottom:8 }}>Endpoint URL</div>
+                <div style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.5px', color:'var(--text-dim)', marginBottom:8 }}>Your webhook URL</div>
                 <div style={{ position:'relative', marginBottom:14 }}>
-                  <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54 }}>
-                    {`${BASE_URL}/api/webhook/shopify`}
+                  <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
+                    {conn?.webhook_url || 'Loading your URL…'}
                   </div>
-                  <button onClick={()=>copyToClipboard(`${BASE_URL}/api/webhook/shopify`)} style={{ position:'absolute', top:-2, right:0, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>Copy</button>
+                  <button onClick={()=>{ if(conn?.webhook_url){ copyToClipboard(conn.webhook_url); setUrlCopied(true); setTimeout(()=>setUrlCopied(false),2000) } }}
+                    style={{ position:'absolute', top:-2, right:0, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>
+                    {urlCopied ? '✓ Copied' : 'Copy'}
+                  </button>
                 </div>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:12 }}>
-                  {[['Shopify','Settings → Notifications → Webhooks'],['WooCommerce','WooCommerce → Settings → Advanced → Webhooks'],['Event','Order payment (orders/paid)'],['Format','JSON']].map(([k,v],i)=>(
+                  {[['Shopify','Settings → Notifications → Webhooks → Create'],['WooCommerce','Settings → Advanced → Webhooks'],['Event','Order payment (orders/paid)'],['Format','JSON']].map(([k,v],i)=>(
                     <div key={i} style={{ background:'var(--surface)', borderRadius:5, padding:'8px 10px' }}>
                       <div style={{ color:'var(--text-dim)', fontSize:10, marginBottom:2 }}>{k}</div>
                       <div style={{ color:'var(--text-secondary)', fontSize:11 }}>{v}</div>
                     </div>
                   ))}
                 </div>
+                <div style={{ marginTop:10, fontSize:11, color:'var(--text-dim)', lineHeight:1.6 }}>
+                  Keep this URL private — it's unique to your account. Paste it exactly as shown; the part after the <code style={{ background:'var(--surface)', padding:'1px 4px', borderRadius:3 }}>?</code> is what identifies and secures your store.
+                </div>
               </div>
-              <div style={{ padding:'10px 14px', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:8, fontSize:11, color:'var(--text-dim)', lineHeight:1.7, marginBottom:4 }}>
-                <strong style={{ color:'var(--text-secondary)' }}>One-time setup with your account manager:</strong> after you create the webhook, send us your <strong>store domain</strong> (the <code style={{ background:'var(--surface2)', padding:'1px 4px', borderRadius:3 }}>.myshopify.com</code> address) and the webhook <strong>signing secret</strong> shown on the Notifications page. We add them to your account so we can verify and accept your orders.
+              {/* Optional — auto-create coupon codes (needs a custom-app token) */}
+              <div style={{ background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'14px 16px', marginBottom:14 }}>
+                <div style={{ fontSize:11, fontWeight:500, color:'var(--text-secondary)', marginBottom:2 }}>
+                  Optional — auto-create coupon codes{conn?.has_shopify_token && <span style={{ color:'#4a7c3f', fontWeight:400 }}> · on ✓</span>}
+                </div>
+                <div style={{ fontSize:11, color:'var(--text-dim)', marginBottom:12, lineHeight:1.6 }}>
+                  Add a Shopify custom-app token and MicroKorant creates each partner's discount code in your store automatically. Skip it and your codes are saved in MicroKorant only (you'd add them in Shopify by hand). The sale tracking above doesn't need this.
+                </div>
+
+                {/* Store domain — auto-detected from the first order, or enter it now */}
+                <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>
+                  Store domain{conn?.has_shopify_domain && <span style={{ color:'#4a7c3f', textTransform:'none', letterSpacing:0 }}> · auto-detected ✓</span>}
+                </label>
+                {conn?.has_shopify_domain ? (
+                  <div style={{ fontFamily:'var(--font-mono)', fontSize:13, color:'var(--text-secondary)', padding:'9px 13px', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:7, marginBottom:12 }}>
+                    {conn.shopify_domain}
+                  </div>
+                ) : (
+                  <input value={shopDomain} onChange={e=>setShopDomain(e.target.value)}
+                    placeholder="yourstore.myshopify.com — auto-fills after your first order"
+                    style={{ width:'100%', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'9px 13px', fontSize:13, color:'var(--text-primary)', fontFamily:'var(--font-mono)', outline:'none', marginBottom:12 }}/>
+                )}
+
+                {/* Admin API access token */}
+                <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>
+                  Admin API access token{conn?.has_shopify_token && <span style={{ color:'#4a7c3f', textTransform:'none', letterSpacing:0 }}> · saved ✓ (leave blank to keep)</span>}
+                </label>
+                <input value={shopToken} onChange={e=>setShopToken(e.target.value)}
+                  type="password" autoComplete="off"
+                  placeholder={conn?.has_shopify_token ? '•••••••• already saved' : 'Custom app → API credentials'}
+                  style={{ width:'100%', background:'var(--surface)', border:'0.5px solid var(--border2)', borderRadius:7, padding:'9px 13px', fontSize:13, color:'var(--text-primary)', fontFamily:'var(--font-mono)', outline:'none', marginBottom:12 }}/>
+
+                {credsMsg && (
+                  <div style={{ margin:'0 0 10px', padding:'8px 12px', borderRadius:6, fontSize:12, lineHeight:1.5,
+                    background: credsMsg.ok ? '#4a7c3f18' : 'rgba(180,60,60,0.1)',
+                    border: `0.5px solid ${credsMsg.ok ? '#4a7c3f55' : 'rgba(180,60,60,.3)'}`,
+                    color: credsMsg.ok ? '#4a7c3f' : 'var(--text-secondary)' }}>
+                    {credsMsg.msg}
+                  </div>
+                )}
+
+                <Btn primary disabled={savingCreds} onClick={saveCreds} label={savingCreds ? 'Saving…' : 'Save token'}/>
               </div>
               <CheckBanner/>
               <div style={{ display:'flex', gap:8, marginTop:14, flexWrap:'wrap', alignItems:'center' }}>
