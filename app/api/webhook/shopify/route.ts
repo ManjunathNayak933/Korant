@@ -1,42 +1,58 @@
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/webhook/shopify/route.ts                               │
+// │ Replace the existing file at <repo-root>/app/api/webhook/shopify/route.ts  │
+// │                                                                            │
+// │ Auth model change: the client is identified by ?cid= and authenticated by │
+// │ ?k= (a per-client key in the webhook URL) instead of HMAC + shop-domain.   │
+// │ The shop's myshopify domain is auto-captured from the first webhook so the │
+// │ discount-code API still works without the customer typing it.              │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
 
-async function verifyShopifyHmac(body: string, hmacHeader: string, secret: string): Promise<boolean> {
-  const encoder = new TextEncoder()
-  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'])
-  const signatureBytes = Uint8Array.from(atob(hmacHeader), c => c.charCodeAt(0))
-  return crypto.subtle.verify('HMAC', key, signatureBytes, encoder.encode(body))
-}
-
 export async function POST(request: NextRequest) {
-  const body = await request.text()
-  // Accept both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 format (API 2026-01+)
-  const hmacHeader = request.headers.get('x-shopify-hmac-sha256') || request.headers.get('shopify-hmac-sha256') || ''
-  const shopifyDomain = request.headers.get('x-shopify-shop-domain') || ''
-  const topic = request.headers.get('x-shopify-topic') || ''
+  const { searchParams } = new URL(request.url)
+  const clientId = searchParams.get('cid')
+  const key = searchParams.get('k')
+
+  if (!clientId) return NextResponse.json({ error: 'cid required' }, { status: 400 })
 
   const sb = getSupabaseAdmin()
 
-  // Find client by shopify domain
+  // Identify the client by the cid in the URL (no longer by shop domain).
   const { data: client } = await sb
     .from('clients')
-    .select('id, webhook_secret')
-    .eq('shopify_domain', shopifyDomain)
+    .select('id, webhook_secret, shopify_domain')
+    .eq('id', clientId)
     .single()
 
-  if (!client) {
-    return NextResponse.json({ error: 'Unknown shop domain' }, { status: 404 })
+  if (!client) return NextResponse.json({ error: 'Unknown client' }, { status: 404 })
+
+  // Authenticate with the per-client URL key. Fail closed: a live client MUST
+  // have a key set, and the ?k= in the URL must match it. (The key is generated
+  // for each client by /api/clients/integrations and shown in the setup screen.)
+  if (!client.webhook_secret || key !== client.webhook_secret) {
+    return NextResponse.json({ error: 'Invalid or missing key' }, { status: 401 })
   }
 
-  // Verify HMAC — fail closed: a live client MUST have a webhook_secret set.
-  if (!client.webhook_secret) {
-    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
+  const topic = request.headers.get('x-shopify-topic') || ''
+  const shopDomain = request.headers.get('x-shopify-shop-domain') || ''
+
+  // Convenience: learn and store the store's myshopify domain from the first
+  // webhook (race-safe: only when not already set). The discount-code Admin API
+  // needs the domain, so this lets auto-codes work without the customer typing
+  // it. Runs in the background so it never delays the 200 back to Shopify.
+  if (shopDomain && !client.shopify_domain) {
+    void sb.from('clients')
+      .update({ shopify_domain: shopDomain.trim().toLowerCase() })
+      .eq('id', client.id)
+      .is('shopify_domain', null)
   }
-  const valid = await verifyShopifyHmac(body, hmacHeader, client.webhook_secret)
-  if (!valid) return NextResponse.json({ error: 'Invalid HMAC' }, { status: 401 })
+
+  const body = await request.text()
 
   let order: any
   try {
@@ -46,9 +62,6 @@ export async function POST(request: NextRequest) {
   }
 
   // Refund / cancellation → reverse the original attribution.
-  //  - refunds/create: payload is a Refund; the order id is `order_id`
-  //    (partial refunds reverse the whole commission for that order — see docs).
-  //  - orders/cancelled: payload is an Order; the order id is `id`.
   if (topic === 'refunds/create') {
     const orderId = String(order.order_id ?? order.order?.id ?? '')
     const r = await reverseSale({ clientId: client.id, orderId, platform: 'shopify', reason: 'refund' })
