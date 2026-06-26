@@ -189,3 +189,60 @@ export async function verifyShopifyWebhook(request: Request, secret: string): Pr
   const computed = btoa(String.fromCharCode(...new Uint8Array(sig)))
   return computed === hmac
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OAuth-app additions (used by /api/shopify/install + /api/shopify/callback and
+// the order webhook handler). These reuse shopifyGraphQL above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Subscribe the connected app to the order webhooks we care about. Called once,
+// right after OAuth, so the customer never sets up a webhook by hand. Safe to
+// re-run: Shopify rejects duplicate topic+address subscriptions, which we ignore.
+export async function registerShopifyOrderWebhooks(
+  domain: string, token: string, callbackUrl: string
+): Promise<void> {
+  const topics = ['ORDERS_PAID', 'REFUNDS_CREATE', 'ORDERS_CANCELLED']
+  for (const topic of topics) {
+    try {
+      const data = await shopifyGraphQL(
+        domain, token,
+        `mutation Sub($topic: WebhookSubscriptionTopic!, $sub: WebhookSubscriptionInput!) {
+           webhookSubscriptionCreate(topic: $topic, webhookSubscription: $sub) {
+             webhookSubscription { id }
+             userErrors { field message }
+           }
+         }`,
+        { topic, sub: { callbackUrl, format: 'JSON' } }
+      )
+      const errs = data?.webhookSubscriptionCreate?.userErrors || []
+      if (errs.length) {
+        const msg = errs.map((e: any) => e.message).join('; ')
+        // "address for this topic has already been taken" = already subscribed → fine.
+        if (!/taken|already/i.test(msg)) console.error(`Webhook ${topic} error:`, msg)
+      }
+    } catch (e) {
+      console.error(`Webhook ${topic} registration failed:`, e)
+    }
+  }
+}
+
+// Verify an app-registered webhook against the app's client secret. App webhooks
+// are signed with SHOPIFY_API_SECRET (one secret for all connected stores), not
+// the per-client URL key. `body` is the raw request text; `hmac` is the
+// X-Shopify-Hmac-Sha256 header. Base64 to match Shopify's format.
+export async function verifyShopifyHmacRaw(
+  body: string, hmac: string, secret: string
+): Promise<boolean> {
+  if (!hmac || !secret) return false
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  )
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(body))
+  const computed = btoa(String.fromCharCode(...new Uint8Array(sig)))
+  // constant-time-ish compare
+  if (computed.length !== hmac.length) return false
+  let r = 0
+  for (let i = 0; i < computed.length; i++) r |= computed.charCodeAt(i) ^ hmac.charCodeAt(i)
+  return r === 0
+}
