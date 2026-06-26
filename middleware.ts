@@ -24,6 +24,7 @@ const PUBLIC_PATHS = [
   '/r/',
   '/api/auth/',
   '/api/webhook/',
+  '/api/shopify/callback', // Shopify's OAuth redirect — no app session
   '/api/whatsapp/connect',
   '/api/affiliate-signup/',
   '/api/marketplace/',
