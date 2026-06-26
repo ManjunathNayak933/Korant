@@ -2,57 +2,69 @@
 // │ REPO PATH:  app/api/webhook/shopify/route.ts                               │
 // │ Replace the existing file at <repo-root>/app/api/webhook/shopify/route.ts  │
 // │                                                                            │
-// │ Auth model change: the client is identified by ?cid= and authenticated by │
-// │ ?k= (a per-client key in the webhook URL) instead of HMAC + shop-domain.   │
-// │ The shop's myshopify domain is auto-captured from the first webhook so the │
-// │ discount-code API still works without the customer typing it.              │
+// │ Accepts orders two ways:                                                   │
+// │  A) App-registered (Connect Shopify): signed with the app secret           │
+// │     (SHOPIFY_API_SECRET), client identified by X-Shopify-Shop-Domain.      │
+// │  B) Manual fallback: ?cid=&k= in the URL (per-client key).                 │
+// │ Auto-captures the shop domain. Order data + attribution are identical for  │
+// │ both paths.                                                                │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
+import { verifyShopifyHmacRaw } from '@/lib/shopify'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const clientId = searchParams.get('cid')
-  const key = searchParams.get('k')
+  const cid = searchParams.get('cid')
+  const k = searchParams.get('k')
 
-  if (!clientId) return NextResponse.json({ error: 'cid required' }, { status: 400 })
-
+  const body = await request.text()
   const sb = getSupabaseAdmin()
 
-  // Identify the client by the cid in the URL (no longer by shop domain).
-  const { data: client } = await sb
-    .from('clients')
-    .select('id, webhook_secret, shopify_domain')
-    .eq('id', clientId)
-    .single()
+  let client: { id: string; shopify_domain: string | null } | null = null
 
-  if (!client) return NextResponse.json({ error: 'Unknown client' }, { status: 404 })
+  if (cid && k) {
+    // ── Path B: manual fallback — identify by cid, authenticate by URL key ──
+    const { data } = await sb
+      .from('clients')
+      .select('id, webhook_secret, shopify_domain')
+      .eq('id', cid)
+      .single()
+    if (!data) return NextResponse.json({ error: 'Unknown client' }, { status: 404 })
+    if (!data.webhook_secret || k !== data.webhook_secret) {
+      return NextResponse.json({ error: 'Invalid or missing key' }, { status: 401 })
+    }
+    client = { id: data.id, shopify_domain: data.shopify_domain }
+  } else {
+    // ── Path A: app-registered webhook — verify app-secret HMAC, find by shop ──
+    const secret = process.env.SHOPIFY_API_SECRET || ''
+    const hmac = request.headers.get('x-shopify-hmac-sha256')
+      || request.headers.get('shopify-hmac-sha256') || ''
+    const ok = await verifyShopifyHmacRaw(body, hmac, secret)
+    if (!ok) return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
 
-  // Authenticate with the per-client URL key. Fail closed: a live client MUST
-  // have a key set, and the ?k= in the URL must match it. (The key is generated
-  // for each client by /api/clients/integrations and shown in the setup screen.)
-  if (!client.webhook_secret || key !== client.webhook_secret) {
-    return NextResponse.json({ error: 'Invalid or missing key' }, { status: 401 })
+    const shop = (request.headers.get('x-shopify-shop-domain') || '').toLowerCase()
+    if (!shop) return NextResponse.json({ error: 'No shop domain' }, { status: 400 })
+    const { data } = await sb
+      .from('clients')
+      .select('id, shopify_domain')
+      .eq('shopify_domain', shop)
+      .single()
+    if (!data) return NextResponse.json({ error: 'Store not connected' }, { status: 404 })
+    client = { id: data.id, shopify_domain: data.shopify_domain }
   }
 
   const topic = request.headers.get('x-shopify-topic') || ''
-  const shopDomain = request.headers.get('x-shopify-shop-domain') || ''
+  const shopDomain = (request.headers.get('x-shopify-shop-domain') || '').toLowerCase()
 
-  // Convenience: learn and store the store's myshopify domain from the first
-  // webhook (race-safe: only when not already set). The discount-code Admin API
-  // needs the domain, so this lets auto-codes work without the customer typing
-  // it. Runs in the background so it never delays the 200 back to Shopify.
+  // Learn the store's myshopify domain if we don't have it yet (mainly for the
+  // manual path; the OAuth path already set it). Race-safe: only when null.
   if (shopDomain && !client.shopify_domain) {
-    void sb.from('clients')
-      .update({ shopify_domain: shopDomain.trim().toLowerCase() })
-      .eq('id', client.id)
-      .is('shopify_domain', null)
+    void sb.from('clients').update({ shopify_domain: shopDomain }).eq('id', client.id).is('shopify_domain', null)
   }
-
-  const body = await request.text()
 
   let order: any
   try {
