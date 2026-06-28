@@ -17,6 +17,14 @@ export interface ResolvedLink {
   partnerName: string
   destinationUrl: string
   isWhatsapp: boolean
+  // The partner's checkout discount code (influencer/affiliate), if any. When
+  // present, the redirect routes through Shopify's /discount/<code> URL so the
+  // discount sticks to the checkout SESSION and survives cart-bypassing
+  // checkouts ("Buy it now", Shop Pay express). null for code-less partners.
+  discountCode: string | null
+  // The client's myshopify domain, used to build the /discount fallback URL when
+  // the destination is relative. null when the client isn't Shopify-connected.
+  shopDomain: string | null
 }
 
 const TTL_SECONDS = 600 // 10 min. Lower if you edit destinations often.
@@ -40,18 +48,31 @@ export async function resolveLink(slug: string): Promise<ResolvedLink | null> {
       : 'direct'
 
     let partnerName = ''
+    let discountCode: string | null = null
     if (link.influencer_id) {
       const { data } = await sb.from('influencers')
-        .select('name').eq('id', link.influencer_id).single()
+        .select('name, discount_code').eq('id', link.influencer_id).single()
       partnerName = data?.name || ''
+      discountCode = data?.discount_code || null
     } else if (link.affiliate_id) {
       const { data } = await sb.from('affiliates')
-        .select('name').eq('id', link.affiliate_id).single()
+        .select('name, discount_code').eq('id', link.affiliate_id).single()
       partnerName = data?.name || ''
+      discountCode = data?.discount_code || null
     } else if (link.publication_id) {
       const { data } = await sb.from('publications')
         .select('publication_name').eq('id', link.publication_id).single()
       partnerName = data?.publication_name || ''
+    }
+
+    // Only Shopify-connected clients can apply a /discount session URL, and we
+    // only need the domain when there's actually a code to route through. One
+    // extra cold-cache read (this whole object is KV-cached for 10 min).
+    let shopDomain: string | null = null
+    if (discountCode) {
+      const { data: c } = await sb.from('clients')
+        .select('shopify_domain').eq('id', link.client_id).single()
+      shopDomain = c?.shopify_domain || null
     }
 
     resolved = {
