@@ -142,9 +142,10 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   if(ref){sc('mk_slug',ref,30);if(!gc('mk_slug_first'))sc('mk_slug_first',ref,90)}`
 
   const shopifyAttach = `
-  var slug=gc('mk_slug'),first=gc('mk_slug_first');
-  if(slug){fetch('/cart/update.js',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({attributes:{mk_slug:slug,mk_slug_first:first||''}})}).catch(function(){})}`
+  function mkAttach(){var slug=gc('mk_slug'),first=gc('mk_slug_first');
+    if(slug){fetch('/cart/update.js',{method:'POST',headers:{'Content-Type':'application/json'},
+      keepalive:true,body:JSON.stringify({attributes:{mk_slug:slug,mk_slug_first:first||''}})}).catch(function(){})}}
+  mkAttach();window.addEventListener('pageshow',mkAttach);`
 
   const beaconFire = `
   new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=pageview&p='+encodeURIComponent(location.pathname)+'&t='+Date.now();`
