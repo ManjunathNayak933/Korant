@@ -2,7 +2,7 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { attributeSale } from '@/lib/attribution'
+import { attributeSale, reverseSale } from '@/lib/attribution'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -34,6 +34,18 @@ export async function POST(request: NextRequest) {
 
   const eventType = body.eventType || 'sale'
 
+  // ── Refund / return / cancellation ──────────────────────────────────────
+  // Parity with the Shopify webhook (refunds/create + orders/cancelled): reverse
+  // the original attribution, keyed by the SAME orderId the sale was sent with.
+  // reverseSale marks the matching sale event(s) reversed (audit trail kept) and
+  // is idempotent — a retried refund finds nothing left to reverse and no-ops.
+  const REVERSAL_TYPES = new Set(['refund', 'return', 'cancel', 'cancelled', 'cancellation', 'reversal'])
+  if (REVERSAL_TYPES.has(String(eventType).toLowerCase())) {
+    const reason = /cancel/i.test(String(eventType)) ? 'cancelled' : 'refund'
+    const r = await reverseSale({ clientId, orderId: String(body.orderId), platform: 'generic', reason })
+    return NextResponse.json({ received: true, reversed: r.reversed })
+  }
+
   if (eventType === 'lead') {
     const mkSlug = body.mkSlug || body.mk_slug
     if (!mkSlug) return NextResponse.json({ error: 'mkSlug required for lead event' }, { status: 400 })
@@ -63,7 +75,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, attributed: false })
   }
 
-  // Sale/discount
+  // ── Sale (incl. discount-code redemptions) ──────────────────────────────
+  // Passing `discountCode` makes attributeSale resolve the sale by the partner's
+  // checkout code exactly like the Shopify path — the code is stored on the
+  // event row (discount_code) so redemptions are captured and queryable. If no
+  // code is sent it falls back to slug/cookie attribution.
   const result = await attributeSale({
     clientId,
     orderValue: body.orderValue || 0,
@@ -74,5 +90,11 @@ export async function POST(request: NextRequest) {
     platform: 'generic',
   })
 
-  return NextResponse.json({ received: true, attributed: result.attributed, channel: result.channel })
+  return NextResponse.json({
+    received: true,
+    attributed: result.attributed,
+    channel: result.channel,
+    method: result.method,          // 'code' | 'cookie' | 'slug' — how it matched
+    commission: result.commission,  // computed commission, if any
+  })
 }
