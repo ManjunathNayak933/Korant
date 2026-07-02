@@ -27,11 +27,20 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   // plus a one-click "Connect Shopify" (OAuth) to enable auto-created codes. No
   // token-pasting — the OAuth callback stores the token for us.
   const [shopDomain,  setShopDomain]  = useState('')
-  const [conn,        setConn]        = useState<{ webhook_url?: string; has_shopify_domain?: boolean; has_shopify_token?: boolean; shopify_domain?: string } | null>(null)
+  const [conn,        setConn]        = useState<{ webhook_url?: string; generic_webhook_url?: string; webhook_secret?: string; has_shopify_domain?: boolean; has_shopify_token?: boolean; shopify_domain?: string } | null>(null)
   const [urlCopied,   setUrlCopied]   = useState(false)
   const [connecting,  setConnecting]  = useState(false)
   const [showReconnect, setShowReconnect] = useState(false)
   const [showManual, setShowManual] = useState(false)
+  // Step 3, second path: a third-party / custom checkout (any non-native Shopify
+  // checkout). The provider POSTs orders to our generic endpoint with the
+  // webhook_secret in a header. Secret is masked until revealed + rotatable.
+  const [checkoutType, setCheckoutType] = useState<'shopify'|'thirdparty'>('shopify')
+  const [secretShown, setSecretShown] = useState(false)
+  const [secretCopied, setSecretCopied] = useState(false)
+  const [genCopied, setGenCopied] = useState(false)
+  const [payloadCopied, setPayloadCopied] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
 
   useEffect(() => { setCheckResult(null); setConfirmStep(null) }, [page])
 
@@ -45,12 +54,32 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
     }).catch(() => {})
   }, [])
 
+  // Rotate the webhook secret (invalidates the old one for BOTH the generic
+  // endpoint and the Shopify ?k= URL — the customer re-copies after rotating).
+  const regenerateSecret = () => {
+    if (regenerating) return
+    if (!window.confirm('Regenerate the secret? Your current webhook secret stops working until you update it in your checkout provider (and re-copy the Shopify link).')) return
+    setRegenerating(true)
+    fetch('/api/clients/integrations', { method: 'POST' })
+      .then(r => r.json()).then((d) => { setConn(d); setSecretShown(true) })
+      .catch(() => {}).finally(() => setRegenerating(false))
+  }
+
   // ── Live endpoints ────────────────────────────────────────────────────
   // The beacon + webhook live on the MicroKorant origin, NOT the merchant's
   // store, so every snippet pasted into a store theme must use the ABSOLUTE
   // origin below. `cid` is this client's id; the beacon route requires it.
   const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
   const CID = user.id
+
+  // Example body a third-party / custom checkout should POST to the generic
+  // endpoint (with the secret in the x-webhook-secret header).
+  const genPayload = `{
+  "orderId": "ORDER-12345",
+  "orderValue": 1299,
+  "discountCode": "PARTNER10",
+  "mkSlug": ""
+}`
 
   // Count only _done (NOT _skipped) for progress
   const doneCount = [ob.domain_done, ob.tracking_done, ob.webhook_done].filter(Boolean).length
@@ -429,6 +458,18 @@ yourSignupApi().then(function(r) {
           {/* PAGE 3 — Webhook */}
           {cur==='webhook'&&(
             <div>
+              {/* Where does payment complete? Shopify's own checkout (OAuth /
+                  webhooks) vs a third-party checkout that must POST our generic
+                  endpoint because the order never becomes paid inside Shopify. */}
+              <div style={{ display:'flex', gap:0, borderBottom:'0.5px solid var(--border2)', marginBottom:14 }}>
+                {([['shopify','Shopify checkout'],['thirdparty','Third-party checkout']] as const).map(([t,label])=>(
+                  <button key={t} onClick={()=>setCheckoutType(t)} style={{ padding:'6px 14px', fontSize:12, border:'none', background:'transparent', color:checkoutType===t?'var(--amber)':'var(--text-dim)', borderBottom:`2px solid ${checkoutType===t?'var(--amber)':'transparent'}`, cursor:'pointer', fontFamily:'var(--font-sans)' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {checkoutType==='shopify' && (<>
               <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:16 }}>
                 One click connects your store. It sets up everything — we see your sales (to credit the right partner) and create your discount codes for you. You approve once on Shopify and you're back here.
               </p>
@@ -490,6 +531,58 @@ yourSignupApi().then(function(r) {
                       style={{ position:'absolute', top:9, right:9, background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
                       {urlCopied ? '✓ Copied' : 'Copy'}
                     </button>
+                  </div>
+                </div>
+              )}
+              </>)}
+
+              {checkoutType==='thirdparty' && (
+                <div>
+                  <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:16 }}>
+                    Your checkout takes payment outside Shopify's native checkout, so orders never reach Shopify as paid — connecting Shopify won't capture them. Instead, have your checkout provider POST every completed order (and refund) to the endpoint below. Most providers set this up from their dashboard or via their support team.
+                  </p>
+
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>1 · Endpoint URL (POST)</label>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
+                    <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
+                      {conn?.generic_webhook_url || 'Loading…'}
+                    </div>
+                    <button onClick={()=>{ if(conn?.generic_webhook_url){ copyToClipboard(conn.generic_webhook_url); setGenCopied(true); setTimeout(()=>setGenCopied(false),2000) } }}
+                      style={{ position:'absolute', top:9, right:9, background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
+                      {genCopied ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>2 · Secret — send in the <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>x-webhook-secret</code> header</label>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:8 }}>
+                    <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect: secretShown?'all':'none', wordBreak:'break-all', paddingRight:110, lineHeight:1.5 }}>
+                      {conn?.webhook_secret ? (secretShown ? conn.webhook_secret : '•'.repeat(24)) : 'Loading…'}
+                    </div>
+                    <div style={{ position:'absolute', top:9, right:9, display:'flex', gap:6 }}>
+                      <button onClick={()=>setSecretShown(v=>!v)}
+                        style={{ background:'transparent', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'4px 8px', fontSize:11, cursor:'pointer' }}>
+                        {secretShown ? 'Hide' : 'Reveal'}
+                      </button>
+                      <button onClick={()=>{ if(conn?.webhook_secret){ copyToClipboard(conn.webhook_secret); setSecretCopied(true); setTimeout(()=>setSecretCopied(false),2000) } }}
+                        style={{ background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
+                        {secretCopied ? '✓' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-dim)', lineHeight:1.6, marginBottom:14 }}>
+                    Treat this like a password — anyone with it can post sales to your account. <button onClick={regenerateSecret} disabled={regenerating} style={{ background:'transparent', border:'none', color:'var(--amber)', fontSize:11, cursor:'pointer', padding:0, textDecoration:'underline' }}>{regenerating ? 'Regenerating…' : 'Regenerate'}</button> if it leaks (this also updates your Shopify link).
+                  </div>
+
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>3 · Body — JSON they should send per order</label>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'10px 12px', marginBottom:8 }}>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{genPayload}</pre>
+                    <button onClick={()=>{ copyToClipboard(genPayload); setPayloadCopied(true); setTimeout(()=>setPayloadCopied(false),2000) }}
+                      style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>
+                      {payloadCopied ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-dim)', lineHeight:1.6 }}>
+                    <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>orderId</code> is required (any unique id — it dedupes webhook retries). Include <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>discountCode</code> or <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>mkSlug</code> so we can credit the partner. For a refund or cancellation, send the same <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>orderId</code> with <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>{'"eventType":"refund"'}</code>.
                   </div>
                 </div>
               )}
