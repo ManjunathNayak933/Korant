@@ -85,6 +85,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, reversed: r.reversed })
   }
 
+  // orders/paid always means paid. orders/create is registered too, so we catch
+  // orders that arrive ALREADY paid via the Admin API (a third-party checkout
+  // writing the finished order back into Shopify) — those never fire orders/paid
+  // because there's no pending→paid transition. Only attribute an orders/create
+  // once it's actually paid; a normal checkout fires both create + paid and
+  // attributeSale dedupes on order_id, so there's no double-count.
+  const financialStatus = String(order.financial_status || '').toLowerCase()
+  if (topic === 'orders/create' && financialStatus !== 'paid') {
+    return NextResponse.json({ received: true, attributed: false, skipped: 'not paid yet' })
+  }
+
   const discountCode = order.discount_codes?.[0]?.code || null
   const noteAttributes: Record<string, string> = {}
   for (const attr of (order.note_attributes || [])) {
