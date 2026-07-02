@@ -201,7 +201,12 @@ export async function verifyShopifyWebhook(request: Request, secret: string): Pr
 export async function registerShopifyOrderWebhooks(
   domain: string, token: string, callbackUrl: string
 ): Promise<void> {
-  const topics = ['ORDERS_PAID', 'REFUNDS_CREATE', 'ORDERS_CANCELLED']
+  // ORDERS_CREATE is registered alongside ORDERS_PAID to catch orders pushed in
+  // ALREADY paid via the Admin API (e.g. a third-party checkout writing the
+  // finished order back into Shopify) — those never fire ORDERS_PAID because
+  // there's no pending→paid transition. A normal checkout fires both; the
+  // handler dedupes on order_id, so no double-count.
+  const topics = ['ORDERS_PAID', 'ORDERS_CREATE', 'REFUNDS_CREATE', 'ORDERS_CANCELLED']
   for (const topic of topics) {
     try {
       const data = await shopifyGraphQL(
