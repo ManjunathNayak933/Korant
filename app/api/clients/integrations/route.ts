@@ -42,10 +42,17 @@ export async function GET(request: NextRequest) {
     key = fresh?.webhook_secret || newKey
   }
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
-  const webhookUrl = `${base}/api/webhook/shopify?cid=${userId}&k=${key}`
+  return NextResponse.json(buildPayload(userId, key, data))
+}
 
-  return NextResponse.json({
+// Shared response shape for GET and POST (rotation).
+function buildPayload(
+  userId: string,
+  key: string,
+  data: { shopify_domain?: string | null; shopify_token?: string | null; razorpay_key_id?: string | null; razorpay_key_secret?: string | null } | null,
+) {
+  const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
+  return {
     // Existing flags — kept for backward compatibility (CouponStatusHint, etc.).
     // `shopify` = discount automation ready (domain + token).
     shopify: !!(data?.shopify_domain && data?.shopify_token),
@@ -53,12 +60,38 @@ export async function GET(request: NextRequest) {
 
     // The ready-to-paste webhook URL — the only thing the customer needs for
     // sale tracking (zero fields).
-    webhook_url: webhookUrl,
+    webhook_url: `${base}/api/webhook/shopify?cid=${userId}&k=${key}`,
+
+    // Third-party / custom checkout (any non-native Shopify checkout). Their
+    // platform POSTs completed orders + refunds here; clientId is in the URL and
+    // the SAME secret goes in the `x-webhook-secret` HEADER — kept out of the URL
+    // so it can't leak into access logs / history / Referer the way ?k= can.
+    generic_webhook_url: `${base}/api/webhook/generic?clientId=${userId}`,
+    webhook_secret: key,
 
     // Optional auto-codes status. Domain is auto-captured from the first order;
     // token is exposed only as a boolean, never its value.
     has_shopify_token: !!data?.shopify_token,
     has_shopify_domain: !!data?.shopify_domain,
     shopify_domain: data?.shopify_domain || '',
-  })
+  }
+}
+
+// Rotate the webhook secret. Overwrites clients.webhook_secret and returns the
+// fresh URLs. NOTE: this invalidates the previous secret for BOTH the generic
+// endpoint AND the Shopify ?k= URL, so both must be re-copied after rotating.
+export async function POST(request: NextRequest) {
+  const userId = request.headers.get('x-user-id')!
+  const sb = getSupabaseAdmin()
+
+  const newKey = generateKey()
+  await sb.from('clients').update({ webhook_secret: newKey }).eq('id', userId)
+
+  const { data } = await sb
+    .from('clients')
+    .select('shopify_domain, shopify_token, razorpay_key_id, razorpay_key_secret')
+    .eq('id', userId)
+    .single()
+
+  return NextResponse.json(buildPayload(userId, newKey, data))
 }
