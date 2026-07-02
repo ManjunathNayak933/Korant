@@ -79,6 +79,25 @@ export async function POST(req: NextRequest) {
       })
     }
 
+    // ── 3b. Third-party checkout (order arrived via the generic endpoint) ──────
+    case 'generic': {
+      const { count } = await sb
+        .from('events')
+        .select('*', { count: 'exact', head: true })
+        .eq('client_id', clientId)
+        .eq('platform', 'generic')
+        .not('order_id', 'is', null)
+        .gte('timestamp', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+
+      const ok = (count || 0) > 0
+      return NextResponse.json({
+        ok,
+        message: ok
+          ? `Receiving orders — ${count} order${count === 1 ? '' : 's'} from your checkout in the last 7 days ✓`
+          : 'No orders received yet. Send a test order through your checkout using one of your partner discount codes, then re-check.',
+      })
+    }
+
     // ── 4. WhatsApp — check phone number is configured ────────────────────────
     case 'whatsapp': {
       const { data } = await sb
