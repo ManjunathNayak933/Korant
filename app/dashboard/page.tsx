@@ -46,17 +46,17 @@ interface MetricsData {
 interface FeedData { items: any[]; alerts: { message: string; type: string }[] }
 
 const TABS = [
-  { id: 'overview',    label: 'Overview',       icon: '▦' },
-  { id: 'influencer',  label: 'Influencer',     icon: '🎯' },
-  { id: 'seo',         label: 'SEO',            icon: '📄' },
-  { id: 'affiliate',   label: 'Affiliate',      icon: '🔗' },
-  { id: 'whatsapp',    label: 'WhatsApp',       icon: '💬' },
-  { id: 'search',      label: 'Search Console', icon: '🔍' },
-  { id: 'analytics',   label: 'Analytics',      icon: '📊' },
-  { id: 'marketplace', label: 'Marketplace',    icon: '🛒',  soon: true },
-  { id: 'influencer-center', label: 'Influencer Center', icon: '⭐' },
-  { id: 'market-view',       label: 'Market View',        icon: '🗺️' },
-  { id: 'requests',    label: 'Requests',       icon: '🔔' },
+  { id: 'overview',    label: 'Overview',       icon: 'O' },
+  { id: 'influencer',  label: 'Influencer',     icon: 'I' },
+  { id: 'seo',         label: 'SEO',            icon: 'S' },
+  { id: 'affiliate',   label: 'Affiliate',      icon: 'A' },
+  { id: 'whatsapp',    label: 'WhatsApp',       icon: 'W' },
+  { id: 'search',      label: 'Search Console', icon: 'S' },
+  { id: 'analytics',   label: 'Analytics',      icon: 'A' },
+  { id: 'marketplace', label: 'Marketplace',    icon: 'M',  soon: true },
+  { id: 'influencer-center', label: 'Influencer Center', icon: 'I' },
+  { id: 'market-view',       label: 'Market View',        icon: 'M' },
+  { id: 'requests',    label: 'Requests',       icon: 'R' },
 ]
 
 // Only _done fields count toward the progress counter.
@@ -163,7 +163,7 @@ export default function DashboardPage() {
   const MonthPicker = () => (
     <>
       {monthOptions.map(m => (
-        <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(212,168,67,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
+        <button key={m.val} onClick={() => setCurrentMonth(m.val)} style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${currentMonth === m.val ? 'var(--amber)' : 'var(--border2)'}`, background: currentMonth === m.val ? 'rgba(157,153,255,0.08)' : 'transparent', color: currentMonth === m.val ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer', fontWeight: currentMonth === m.val ? 500 : 400 }}>{m.label}</button>
       ))}
     </>
   )
@@ -194,7 +194,7 @@ export default function DashboardPage() {
   ]
 
   const kpiCell = (label: string, value: string, dim?: string) => (
-    <div style={{ padding: '18px 20px', borderRight: '0.5px solid var(--border)' }}>
+    <div style={{ padding: '18px 20px', borderRight: '1px solid var(--border)' }}>
       <div style={{ fontSize: 9, letterSpacing: '0.5px', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
       {dim && <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4 }}>{dim}</div>}
@@ -207,7 +207,7 @@ export default function DashboardPage() {
       <ChannelTabs tabs={TABS} active={activeTab} onChange={setActiveTab} />
 
       {(feed.alerts?.length > 0 || (metrics as any)?.eventsTruncated) && (
-        <div style={{ background: 'var(--amber-bg)', borderBottom: '0.5px solid var(--amber-border)', padding: '9px 24px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ background: 'var(--amber-bg)', borderBottom: '1px solid var(--amber-border)', padding: '9px 24px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--amber)', flexShrink: 0 }} />
           <span style={{ fontSize: 11, color: 'var(--amber)', flex: 1 }}>
             {[
@@ -219,7 +219,7 @@ export default function DashboardPage() {
       )}
 
       {activeTab !== 'overview' && (
-        <div style={{ borderBottom: '0.5px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ borderBottom: '1px solid var(--border)', padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginRight: 2 }}>Period:</span>
           <MonthPicker />
         </div>
@@ -230,19 +230,19 @@ export default function DashboardPage() {
         {activeTab === 'overview' && (
           <>
             {/* Period + Campaign strip */}
-            <div style={{ padding: '10px 0', borderBottom: '0.5px solid var(--border)', margin: '0 -24px', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)', margin: '0 -24px', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Period:</span>
               <MonthPicker />
               <div style={{ width: '0.5px', height: 16, background: 'var(--border2)', margin: '0 4px' }} />
               <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)' }}>Campaign:</span>
-              <button onClick={() => setOverviewCampaign('')} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${!overviewCampaign ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: !overviewCampaign ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>All</button>
+              <button onClick={() => setOverviewCampaign('')} style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${!overviewCampaign ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: !overviewCampaign ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>All</button>
               {campaigns.map(camp => (
-                <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `0.5px solid ${overviewCampaign === camp.id ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
+                <button key={camp.id} onClick={() => setOverviewCampaign(camp.id)} style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${overviewCampaign === camp.id ? 'var(--blue)' : 'var(--border2)'}`, background: 'transparent', color: overviewCampaign === camp.id ? 'var(--blue)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>{camp.name}</button>
               ))}
             </div>
 
             {/* KPI row 1 — 5 cols: clicks, sales, code sales, conv rate, total audience */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '1px solid var(--border)', margin: '0 -24px' }}>
               {kpiCell('Total clicks',    (s.totalClicks||0).toLocaleString('en-IN'))}
               {kpiCell('Total sales',     (s.totalSales ||0).toLocaleString('en-IN'))}
               {kpiCell('Code sales',      (s.codeRedemptions||0).toLocaleString('en-IN'))}
@@ -251,7 +251,7 @@ export default function DashboardPage() {
             </div>
 
             {/* KPI row 2 — 5 cols: revenue, budget, cost/click, multi-channel, single-channel */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '0.5px solid var(--border)', margin: '0 -24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderBottom: '1px solid var(--border)', margin: '0 -24px' }}>
               {kpiCell('Revenue',        `₹${((s.revenueAttributed||0)/100000).toFixed(1)}L`)}
               {kpiCell('Total budget',   `₹${Math.round((s.totalBudget||0)/1000)}k`)}
               {kpiCell('Cost / click',   s.avgCostPerClick ? `₹${s.avgCostPerClick.toFixed(1)}` : '—')}
@@ -263,13 +263,13 @@ export default function DashboardPage() {
             <div style={{ padding: '24px 0', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
 
               {/* Channel comparison — full width */}
-              <div style={{ gridColumn: '1/-1', background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
+              <div style={{ gridColumn: '1/-1', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 18 }}>
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 16 }}>Channel comparison — {currentMonthLabel}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
                   {[['Influencer','influencer','var(--amber)'],['SEO','seo','var(--blue)'],['Affiliate','affiliate','var(--green)'],['WhatsApp','whatsapp','#25d366']].map(([ch,key,color]) => {
                     const c = (channels[key] || {}) as ChannelData
                     return (
-                      <div key={ch} style={{ background: 'var(--surface2)', border: '0.5px solid var(--border3)', borderRadius: 8, padding: 14 }}>
+                      <div key={ch} style={{ background: 'var(--surface2)', border: '1px solid var(--border3)', borderRadius: 8, padding: 14 }}>
                         <div style={{ fontSize: 11, color, marginBottom: 10, fontWeight: 500 }}>{ch}</div>
                         {(ch === 'WhatsApp'
                           ? [['Sent',c.sent||0],['Read',c.read||0],['Revenue',`₹${((c.revenue||0)/1000).toFixed(0)}k`]]
@@ -289,11 +289,11 @@ export default function DashboardPage() {
               <MiniBarChart title="Clicks by channel" bars={clickBars} emptyMessage="No clicks yet — share your tracking links" height={100} />
               <MiniBarChart title="Revenue by channel (₹)" bars={revBars} emptyMessage="No attributed revenue yet" height={100} />
 
-              <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: 18 }}>
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 18 }}>
                 <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 14 }}>Top influencers</div>
                 {metrics?.influencers?.length > 0 ? (
                   metrics.influencers.slice(0,5).map((inf: any) => (
-                    <div key={inf.influencerId} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, paddingBottom:10, borderBottom:'0.5px solid var(--border3)' }}>
+                    <div key={inf.influencerId} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, paddingBottom:10, borderBottom:'1px solid var(--border3)' }}>
                       <div>
                         <div style={{ fontSize:12, color:'var(--text-secondary)', fontWeight:500 }}>{inf.name}</div>
                         <div style={{ fontSize:10, color:'var(--text-dim)' }}>{inf.clicks} clicks · {inf.totalSales} sales</div>
@@ -304,7 +304,7 @@ export default function DashboardPage() {
                 ) : (
                   <div style={{ textAlign:'center', padding:'20px 0' }}>
                     <div style={{ fontSize:11, color:'var(--text-dim)', marginBottom:8 }}>No influencer data yet</div>
-                    <button onClick={() => setActiveTab('influencer')} style={{ border:'0.5px solid var(--amber)', color:'var(--amber)', background:'transparent', borderRadius:6, padding:'5px 12px', fontSize:11, cursor:'pointer' }}>Add influencer →</button>
+                    <button onClick={() => setActiveTab('influencer')} style={{ border:'1px solid var(--amber)', color:'var(--amber)', background:'transparent', borderRadius:6, padding:'5px 12px', fontSize:11, cursor:'pointer' }}>Add influencer →</button>
                   </div>
                 )}
               </div>
@@ -348,12 +348,12 @@ export default function DashboardPage() {
           <div style={{ padding: '24px 0' }}>
             <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 16 }}>Partnership requests</div>
             {requests.length === 0 ? (
-              <div style={{ textAlign:'center', padding:60, border:'0.5px dashed var(--border2)', borderRadius:10 }}>
+              <div style={{ textAlign:'center', padding:60, border:'1px dashed var(--border2)', borderRadius:10 }}>
                 <div style={{ fontSize:20, marginBottom:8 }}>🤝</div>
                 <div style={{ fontSize:13, color:'var(--text-dim)' }}>No pending requests</div>
               </div>
             ) : requests.map((req: any) => (
-              <div key={req.id} style={{ background:'var(--surface)', border:'0.5px solid var(--border)', borderRadius:10, padding:18, marginBottom:10 }}>
+              <div key={req.id} style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, padding:18, marginBottom:10 }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
                   <div>
                     <div style={{ fontSize:13, fontWeight:500, color:'var(--text-secondary)', marginBottom:4 }}>{req.agency_name}</div>
@@ -365,12 +365,12 @@ export default function DashboardPage() {
                       const res = await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'accept'})})
                       if (!res.ok) { alert('Failed to accept request. Please try again.'); return }
                       setRequests(prev=>prev.filter(r=>r.id!==req.id))
-                    }} style={{ border:'0.5px solid var(--green)', color:'var(--green)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Accept</button>
+                    }} style={{ border:'1px solid var(--green)', color:'var(--green)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Accept</button>
                     <button onClick={async () => {
                       const res = await fetch(`/api/agency-requests/${req.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reject'})})
                       if (!res.ok) { alert('Failed to decline request. Please try again.'); return }
                       setRequests(prev=>prev.filter(r=>r.id!==req.id))
-                    }} style={{ border:'0.5px solid var(--red)', color:'var(--red)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Decline</button>
+                    }} style={{ border:'1px solid var(--red)', color:'var(--red)', background:'transparent', borderRadius:6, padding:'6px 14px', fontSize:12, cursor:'pointer' }}>Decline</button>
                   </div>
                 </div>
               </div>
@@ -380,10 +380,10 @@ export default function DashboardPage() {
 
         {activeTab === 'search' && (
           <div style={{ padding: '24px 0' }}>
-            <div style={{ background:'var(--surface)', border:'0.5px solid var(--border)', borderRadius:10, padding:24, maxWidth:500 }}>
+            <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, padding:24, maxWidth:500 }}>
               <div style={{ fontSize:14, fontWeight:500, color:'var(--text-primary)', marginBottom:8 }}>Google Search Console</div>
               <p style={{ fontSize:13, color:'var(--text-muted)', marginBottom:20, lineHeight:1.7 }}>Connect your GSC property to see keyword rankings alongside attribution data.</p>
-              <a href="/api/integrations/gsc" style={{ border:'0.5px solid var(--blue)', color:'var(--blue)', borderRadius:7, padding:'8px 18px', fontSize:13, textDecoration:'none', display:'inline-block' }}>Connect Google Search Console</a>
+              <a href="/api/integrations/gsc" style={{ border:'1px solid var(--blue)', color:'var(--blue)', borderRadius:7, padding:'8px 18px', fontSize:13, textDecoration:'none', display:'inline-block' }}>Connect Google Search Console</a>
             </div>
           </div>
         )}
