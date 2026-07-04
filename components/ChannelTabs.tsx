@@ -12,7 +12,8 @@ export default function ChannelTabs({ tabs, active, onChange }: Props) {
           onClick={() => !tab.locked && !tab.soon && onChange(tab.id)}
           style={{
             padding: '11px 16px',
-            fontSize: 12,
+            fontSize: 13,
+            fontWeight: 600,
             color: active === tab.id ? 'var(--text-primary)' : tab.locked ? 'var(--border2)' : 'var(--text-muted)',
             background: 'transparent',
             border: 'none',
@@ -25,18 +26,6 @@ export default function ChannelTabs({ tabs, active, onChange }: Props) {
             opacity: tab.soon ? 0.5 : 1,
           }}
         >
-          {tab.icon && (
-            <span style={{
-              fontFamily: 'var(--font-mono)',
-              fontWeight: 700,
-              fontSize: 12,
-              lineHeight: 1,
-              width: 13,
-              textAlign: 'center',
-              letterSpacing: '0.5px',
-              color: active === tab.id ? 'var(--amber)' : tab.locked ? 'var(--border2)' : 'var(--text-dim)',
-            }}>{tab.icon}</span>
-          )}
           {tab.label}
           {tab.soon && (
             <span style={{ background: 'var(--surface2)', border: '1px solid var(--border2)', borderRadius: 3, padding: '1px 5px', fontSize: 9, color: 'var(--text-faint)', letterSpacing: '0.3px' }}>
