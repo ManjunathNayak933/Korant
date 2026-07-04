@@ -5,7 +5,7 @@ interface Props { tabs: Tab[]; active: string; onChange: (id: string) => void }
 
 export default function ChannelTabs({ tabs, active, onChange }: Props) {
   return (
-    <div style={{ borderBottom: '0.5px solid var(--border)', display: 'flex', overflowX: 'auto', background: 'var(--bg)' }}>
+    <div style={{ borderBottom: '1px solid var(--border)', display: 'flex', overflowX: 'auto', background: 'var(--bg)' }}>
       {tabs.map(tab => (
         <button
           key={tab.id}
@@ -25,10 +25,21 @@ export default function ChannelTabs({ tabs, active, onChange }: Props) {
             opacity: tab.soon ? 0.5 : 1,
           }}
         >
-          {tab.icon && <span style={{ fontSize: 12 }}>{tab.icon}</span>}
+          {tab.icon && (
+            <span style={{
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 700,
+              fontSize: 12,
+              lineHeight: 1,
+              width: 13,
+              textAlign: 'center',
+              letterSpacing: '0.5px',
+              color: active === tab.id ? 'var(--amber)' : tab.locked ? 'var(--border2)' : 'var(--text-dim)',
+            }}>{tab.icon}</span>
+          )}
           {tab.label}
           {tab.soon && (
-            <span style={{ background: 'var(--surface2)', border: '0.5px solid var(--border2)', borderRadius: 3, padding: '1px 5px', fontSize: 9, color: 'var(--text-faint)', letterSpacing: '0.3px' }}>
+            <span style={{ background: 'var(--surface2)', border: '1px solid var(--border2)', borderRadius: 3, padding: '1px 5px', fontSize: 9, color: 'var(--text-faint)', letterSpacing: '0.3px' }}>
               SOON
             </span>
           )}
