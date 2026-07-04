@@ -46,17 +46,17 @@ interface MetricsData {
 interface FeedData { items: any[]; alerts: { message: string; type: string }[] }
 
 const TABS = [
-  { id: 'overview',    label: 'Overview',       icon: 'O' },
-  { id: 'influencer',  label: 'Influencer',     icon: 'I' },
-  { id: 'seo',         label: 'SEO',            icon: 'S' },
-  { id: 'affiliate',   label: 'Affiliate',      icon: 'A' },
-  { id: 'whatsapp',    label: 'WhatsApp',       icon: 'W' },
-  { id: 'search',      label: 'Search Console', icon: 'S' },
-  { id: 'analytics',   label: 'Analytics',      icon: 'A' },
-  { id: 'marketplace', label: 'Marketplace',    icon: 'M',  soon: true },
-  { id: 'influencer-center', label: 'Influencer Center', icon: 'I' },
-  { id: 'market-view',       label: 'Market View',        icon: 'M' },
-  { id: 'requests',    label: 'Requests',       icon: 'R' },
+  { id: 'overview',    label: 'Overview' },
+  { id: 'influencer',  label: 'Influencer' },
+  { id: 'seo',         label: 'SEO' },
+  { id: 'affiliate',   label: 'Affiliate' },
+  { id: 'whatsapp',    label: 'WhatsApp' },
+  { id: 'search',      label: 'Search Console' },
+  { id: 'analytics',   label: 'Analytics' },
+  { id: 'marketplace', label: 'Marketplace', soon: true },
+  { id: 'influencer-center', label: 'Influencer Center' },
+  { id: 'market-view',       label: 'Market View' },
+  { id: 'requests',    label: 'Requests' },
 ]
 
 // Only _done fields count toward the progress counter.
