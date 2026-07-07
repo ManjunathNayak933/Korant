@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
+import { recoverCartsForOrder } from '@/lib/cart-abandonment'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -88,6 +89,17 @@ export async function POST(request: NextRequest) {
     mkSlug: body.mkSlug || body.mk_slug || undefined,
     mkSlugFirst: body.mkSlugFirst || body.mk_slug_first || undefined,
     platform: 'generic',
+  })
+
+  // Cart abandonment: if this buyer had an open abandoned-cart sequence, stop it
+  // and credit the recovery to the message that was live. Pass phone/email on the
+  // order payload for this to match; a no-op otherwise. Best-effort.
+  await recoverCartsForOrder({
+    clientId,
+    phone: body.phone || body.customer_phone || null,
+    email: body.email || body.customer_email || null,
+    orderId: String(body.orderId),
+    orderValue: body.orderValue || 0,
   })
 
   return NextResponse.json({
