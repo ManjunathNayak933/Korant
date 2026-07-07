@@ -52,7 +52,7 @@ export default function PayoutReport({ clientId, section, month }: Props) {
         if (!res.ok) { setError(json.error || 'Failed to load report'); setData(null) }
         else         { setData(json); setError('') }
       } catch {
-        if (alive) setError('Network error — please try again')
+        if (alive) { setError('Network error — please try again'); setData(null) }
       } finally {
         if (alive) setLoading(false)
       }
@@ -60,31 +60,25 @@ export default function PayoutReport({ clientId, section, month }: Props) {
     return () => { alive = false }
   }, [clientId, section, month])
 
-  if (loading) {
-    return <div style={{ textAlign: 'center', padding: 48, color: '#3a3632', fontSize: 13 }}>Loading {meta.label.toLowerCase()} payout report…</div>
-  }
-
-  if (error) {
-    return (
-      <div style={{ textAlign: 'center', padding: 56, border: '0.5px dashed #2a2a2a', borderRadius: 10 }}>
-        <div style={{ fontSize: 20, marginBottom: 10 }}>🔒</div>
-        <div style={{ fontSize: 14, color: '#c8c4bc', marginBottom: 6 }}>Report unavailable</div>
-        <div style={{ fontSize: 12, color: '#5a5652' }}>{error}</div>
-      </div>
-    )
-  }
-
-  const { summary, rows } = data!
+  // KPIs are derived from the returned rows so the four cards ALWAYS render and
+  // mirror the "All payouts" view exactly: Total amount, Paid out, Pending
+  // (count of pending payouts), Partners. When empty/loading/error they show 0.
+  const rows: ReportRow[] = data?.rows || []
+  const totalAmount  = rows.reduce((s, r) => s + (r.amount || 0), 0)
+  const paidAmount   = rows.filter(r => r.status === 'paid').reduce((s, r) => s + (r.amount || 0), 0)
+  const pendingCount = rows.filter(r => r.status === 'pending').length
+  const totalSales   = rows.reduce((s, r) => s + (r.sales || 0), 0)
+  const totalRevenue = rows.reduce((s, r) => s + (r.revenue || 0), 0)
 
   return (
     <div>
-      {/* Summary cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+      {/* KPI cards — always visible, identical set to the All payouts view */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
         {[
-          [`${meta.label} payout`, inr(summary.totalAmount)],
-          ['Paid out',            inr(summary.paidAmount)],
-          ['Pending',             inr(summary.pendingAmount)],
-          ['Partners',            String(summary.partners)],
+          ['Total amount', inr(totalAmount)],
+          ['Paid out',     inr(paidAmount)],
+          ['Pending',      String(pendingCount)],
+          ['Partners',     String(rows.length)],
         ].map(([l, v]) => (
           <div key={l} style={{ background: '#111', border: '0.5px solid #1e1e1e', borderRadius: 10, padding: 16 }}>
             <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#4a4642', marginBottom: 6 }}>{l}</div>
@@ -93,10 +87,14 @@ export default function PayoutReport({ clientId, section, month }: Props) {
         ))}
       </div>
 
-      {/* Table */}
-      {rows.length === 0 ? (
+      {/* Body: loading / error / empty / table */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 48, color: '#3a3632', fontSize: 13 }}>Loading {meta.label.toLowerCase()} payout report…</div>
+      ) : error ? (
+        <div style={{ textAlign: 'center', padding: 48, border: '0.5px dashed #2a2a2a', borderRadius: 10, color: '#5a5652', fontSize: 13 }}>{error}</div>
+      ) : rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 60, border: '0.5px dashed #2a2a2a', borderRadius: 10, color: '#3a3632', fontSize: 13 }}>
-          No {meta.label.toLowerCase()} payouts for this month. Generate payouts on the Payouts page to populate this report.
+          No {meta.label.toLowerCase()} payouts for {month}. Click "Generate payouts" to create them.
         </div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -125,9 +123,9 @@ export default function PayoutReport({ clientId, section, month }: Props) {
             {/* Totals row */}
             <tr>
               <td style={{ padding: '11px 12px', fontSize: 12, color: '#5a5652', fontWeight: 500 }}>Total</td>
-              <td style={{ padding: '11px 12px', fontSize: 13, color: '#c8c4bc' }}>{summary.totalSales}</td>
-              <td style={{ padding: '11px 12px', fontSize: 13, color: '#c8c4bc' }}>{inr(summary.totalRevenue)}</td>
-              <td style={{ padding: '11px 12px', fontSize: 13, fontWeight: 600, color: '#e8e4dc' }}>{inr(summary.totalAmount)}</td>
+              <td style={{ padding: '11px 12px', fontSize: 13, color: '#c8c4bc' }}>{totalSales}</td>
+              <td style={{ padding: '11px 12px', fontSize: 13, color: '#c8c4bc' }}>{inr(totalRevenue)}</td>
+              <td style={{ padding: '11px 12px', fontSize: 13, fontWeight: 600, color: '#e8e4dc' }}>{inr(totalAmount)}</td>
               <td style={{ padding: '11px 12px' }} />
             </tr>
           </tbody>
