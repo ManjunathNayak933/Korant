@@ -251,3 +251,37 @@ export async function verifyShopifyHmacRaw(
   for (let i = 0; i < computed.length; i++) r |= computed.charCodeAt(i) ^ hmac.charCodeAt(i)
   return r === 0
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cart-abandonment addition: subscribe the connected app to CHECKOUT webhooks so
+// ABANDONED CARTS flow in (Shopify fires these when a shopper reaches checkout
+// and enters details but doesn't pay). Same pattern as registerShopifyOrderWebhooks
+// above; duplicate-topic errors are ignored. Called from the OAuth callback.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function registerShopifyCheckoutWebhooks(
+  domain: string, token: string, callbackUrl: string
+): Promise<void> {
+  const topics = ['CHECKOUTS_CREATE', 'CHECKOUTS_UPDATE']
+  for (const topic of topics) {
+    try {
+      const data = await shopifyGraphQL(
+        domain, token,
+        `mutation Sub($topic: WebhookSubscriptionTopic!, $sub: WebhookSubscriptionInput!) {
+           webhookSubscriptionCreate(topic: $topic, webhookSubscription: $sub) {
+             webhookSubscription { id }
+             userErrors { field message }
+           }
+         }`,
+        { topic, sub: { callbackUrl, format: 'JSON' } }
+      )
+      const errs = data?.webhookSubscriptionCreate?.userErrors || []
+      if (errs.length) {
+        const msg = errs.map((e: any) => e.message).join('; ')
+        // "address for this topic has already been taken" = already subscribed → fine.
+        if (!/taken|already/i.test(msg)) console.error(`Webhook ${topic} error:`, msg)
+      }
+    } catch (e) {
+      console.error(`Webhook ${topic} registration failed:`, e)
+    }
+  }
+}
