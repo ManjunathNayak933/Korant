@@ -116,6 +116,7 @@ export default function OverviewAnalytics({
   const [data, setData]       = useState<OverviewData | null>(null)
   const [loading, setLoading] = useState(false)
   const [view, setView]       = useState<'scatter' | 'overlap'>('scatter')
+  const [cartRecovery, setCartRecovery] = useState<any>(null)
 
   useEffect(() => {
     if (!clientId) return
@@ -124,6 +125,12 @@ export default function OverviewAnalytics({
       .then(r => r.json())
       .then(d => { setData(d); onData?.(d); setLoading(false) })
       .catch(() => setLoading(false))
+
+    // Cart-abandonment recovered revenue — the headline number for the card below.
+    fetch(`/api/analytics/cart-recovery?clientId=${clientId}&month=${month || new Date().toISOString().slice(0,7)}`)
+      .then(r => r.json())
+      .then(setCartRecovery)
+      .catch(() => {})
   }, [clientId, month])
 
   if (loading) return <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>Loading audience data...</div>
@@ -131,6 +138,29 @@ export default function OverviewAnalytics({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Cart-abandonment recovered revenue */}
+      {cartRecovery && (cartRecovery.detected > 0 || cartRecovery.totalRevenue > 0) && (
+        <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 8, padding: 16 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 10 }}>Cart Abandonment Recovery</div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 4 }}>Revenue recovered</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#25d366', lineHeight: 1 }}>₹{Number(cartRecovery.totalRevenue || 0).toLocaleString('en-IN')}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 4 }}>Carts recovered</div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1 }}>{cartRecovery.recovered || 0} <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 400 }}>/ {cartRecovery.detected || 0} ({cartRecovery.recoveryRate || 0}%)</span></div>
+            </div>
+            {(cartRecovery.byMessage || []).map((m: any) => (
+              <div key={m.step}>
+                <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 4 }}>Msg {m.step}</div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--amber)', lineHeight: 1 }}>₹{Number(m.revenue || 0).toLocaleString('en-IN')} <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 400 }}>· {m.recovered || 0}</span></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 6 }}>
         <button onClick={() => setView('scatter')} style={{ padding: '5px 14px', borderRadius: 6, border: `0.5px solid ${view === 'scatter' ? 'var(--amber)' : 'var(--border2)'}`, background: view === 'scatter' ? 'rgba(212,168,67,0.1)' : 'transparent', color: view === 'scatter' ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>📊 Reach vs Conv.</button>
         <button onClick={() => setView('overlap')} style={{ padding: '5px 14px', borderRadius: 6, border: `0.5px solid ${view === 'overlap' ? 'var(--amber)' : 'var(--border2)'}`, background: view === 'overlap' ? 'rgba(212,168,67,0.1)' : 'transparent', color: view === 'overlap' ? 'var(--amber)' : 'var(--text-muted)', fontSize: 11, cursor: 'pointer' }}>⚠️ Audience Overlap</button>
