@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import DashboardNav from '@/components/DashboardNav'
+import PayoutReport from '@/components/PayoutReport'
+import { SECTION_ORDER, REPORT_SECTIONS, type ReportSection } from '@/lib/report-sections'
 
 export default function PayoutsPage() {
   const router = useRouter()
@@ -21,6 +23,10 @@ export default function PayoutsPage() {
   // Affiliate confirmation checkboxes — UI only, no DB needed
   // Key: payout id → boolean
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({})
+
+  // Which view is active: the cross-channel management table ('all') or a single
+  // channel's payout report. Channel views render the read-only PayoutReport.
+  const [view, setView] = useState<'all' | ReportSection>('all')
 
   const load = async (m: string) => {
     const meRes = await fetch('/api/auth/me')
@@ -86,6 +92,28 @@ export default function PayoutsPage() {
           </div>
         </div>
 
+        {/* Channel tabs — "All payouts" is the cross-channel management view; each
+            channel tab shows that single channel's read-only payout report. */}
+        <div style={{ borderBottom: '0.5px solid #1e1e1e', display: 'flex', marginBottom: 24 }}>
+          <button onClick={() => setView('all')}
+            style={{ padding: '10px 16px', background: 'transparent', border: 'none', borderBottom: `1.5px solid ${view === 'all' ? '#d4a843' : 'transparent'}`, color: view === 'all' ? '#e8e4dc' : '#5a5652', fontSize: 12, cursor: 'pointer' }}>
+            All payouts
+          </button>
+          {SECTION_ORDER.map(s => (
+            <button key={s} onClick={() => setView(s)}
+              style={{ padding: '10px 16px', background: 'transparent', border: 'none', borderBottom: `1.5px solid ${view === s ? '#d4a843' : 'transparent'}`, color: view === s ? '#e8e4dc' : '#5a5652', fontSize: 12, cursor: 'pointer' }}>
+              {REPORT_SECTIONS[s].label}
+            </button>
+          ))}
+        </div>
+
+        {/* Single-channel payout report */}
+        {view !== 'all' && (
+          <PayoutReport clientId={user?.id} section={view} month={month} />
+        )}
+
+        {/* All payouts — cross-channel management */}
+        {view === 'all' && (<>
         {/* Summary */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
           {[
@@ -180,6 +208,7 @@ export default function PayoutsPage() {
             </tbody>
           </table>
         )}
+        </>)}
       </div>
 
       {/* Mark paid modal */}
