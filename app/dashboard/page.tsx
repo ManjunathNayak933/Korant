@@ -18,6 +18,7 @@ import SetupModal from '@/components/SetupModal'
 import WhatsAppDashboard from '@/components/WhatsAppDashboard'
 import MiniBarChart from '@/components/MiniBarChart'
 import OverviewAnalytics from '@/components/OverviewAnalytics'
+import CampaignFunnel from '@/components/CampaignFunnel'
 import InfluencerCenter from '@/components/InfluencerCenter'
 import MarketView from '@/components/MarketView'
 
@@ -257,6 +258,12 @@ export default function DashboardPage() {
               {kpiCell('Cost / click',   s.avgCostPerClick ? `₹${s.avgCostPerClick.toFixed(1)}` : '—')}
               {kpiCell('Multi-channel',  universeStats.totalMultiTouch.toLocaleString('en-IN'), 'touched 2+ partners')}
               {kpiCell('Single-channel', universeStats.totalSingleTouch.toLocaleString('en-IN'), 'one partner only')}
+            </div>
+
+            {/* Conversion funnel — all channels combined, responds to the campaign filter above.
+                Sits between the 8 KPIs and Channel comparison. */}
+            <div style={{ padding: '24px 0 0' }}>
+              <CampaignFunnel clientId={user?.id} month={currentMonth} campaignId={overviewCampaign} />
             </div>
 
             {/* Charts grid */}
