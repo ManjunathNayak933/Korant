@@ -12,9 +12,12 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 
-// Only the scopes lib/shopify.ts actually uses (create/update/delete/look up
-// discount codes). Keep this minimal — Shopify restricts unused scopes.
-const SCOPES = 'read_orders,write_discounts,read_discounts'
+// Scopes: discount-code management (create/update/delete/look up) + read_orders
+// for sales, and read_checkouts so the app can subscribe to the CHECKOUTS_*
+// webhooks that power cart abandonment. Keep this minimal — Shopify restricts
+// unused scopes. NOTE: checkout/customer data is "protected customer data" —
+// the app must also be approved for it in the Shopify Partner dashboard.
+const SCOPES = 'read_orders,read_checkouts,write_discounts,read_discounts'
 
 function b64url(s: string): string {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
