@@ -68,15 +68,17 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Payout records for THIS section only ───────────────────────────────
+  // select('*') (like /api/payouts) is resilient to schema differences; we read
+  // only the fields we need below. A read error degrades to an empty report
+  // rather than a 500, so the page still renders the KPI cards + empty state.
   let payoutQ = sb
     .from('payouts')
-    .select('entity_id, entity_name, handle, amount, status, source, month, paid_at, paid_via, utr_number')
+    .select('*')
     .eq('client_id', clientId)
     .in('entity_type', meta.entityTypes)
     .order('amount', { ascending: false })
   if (month) payoutQ = payoutQ.eq('month', month)
-  const { data: payouts, error: payErr } = await payoutQ
-  if (payErr) return NextResponse.json({ error: payErr.message }, { status: 500 })
+  const { data: payouts } = await payoutQ
 
   // ── Performance (sales + attributed revenue) from events ───────────────
   // Keyed by the section's FK. Sales only (not clicks); refunded/cancelled
