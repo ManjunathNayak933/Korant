@@ -14,7 +14,7 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { registerShopifyOrderWebhooks } from '@/lib/shopify'
+import { registerShopifyOrderWebhooks, registerShopifyCheckoutWebhooks } from '@/lib/shopify'
 
 async function hmacHex(data: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -111,6 +111,10 @@ export async function GET(request: NextRequest) {
   //    finds the client by shop domain (stored just above). Best-effort: a
   //    failure here doesn't undo the connection (codes still work).
   await registerShopifyOrderWebhooks(shop, accessToken, `${base}/api/webhook/shopify`)
+
+  // 7. Subscribe to CHECKOUT webhooks too, so ABANDONED CARTS flow into the
+  //    cart-abandonment feature. Best-effort, same as above.
+  await registerShopifyCheckoutWebhooks(shop, accessToken, `${base}/api/webhook/shopify-checkout`)
 
   return NextResponse.redirect(`${base}/?shopify=connected`, 302)
 }
