@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
 import { verifyShopifyHmacRaw } from '@/lib/shopify'
+import { recoverCartsForOrder } from '@/lib/cart-abandonment'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -110,6 +111,17 @@ export async function POST(request: NextRequest) {
     mkSlug: noteAttributes['mk_slug'] || undefined,
     mkSlugFirst: noteAttributes['mk_slug_first'] || undefined,
     platform: 'shopify',
+  })
+
+  // Cart abandonment: stop any open sequence for this buyer and credit the
+  // recovery to whichever message was live when they bought. Matches by
+  // phone/email; a no-op when the buyer had no abandoned cart. Best-effort.
+  await recoverCartsForOrder({
+    clientId: client.id,
+    phone: order.phone || order.customer?.phone || order.shipping_address?.phone || order.billing_address?.phone || null,
+    email: order.email || order.customer?.email || null,
+    orderId: String(order.id),
+    orderValue: parseFloat(order.total_price || '0'),
   })
 
   return NextResponse.json({ received: true, attributed: result.attributed, channel: result.channel })
