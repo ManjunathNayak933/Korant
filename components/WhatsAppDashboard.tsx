@@ -4,6 +4,7 @@ import Modal from './Modal'
 import { FormField, Input, Select, Textarea, SubmitButton } from './FormFields'
 import ChannelStatsBar from './ChannelStatsBar'
 import { useCouponIntegrations, CouponStatusHint } from './CouponStatusHint'
+import CartAbandonmentTab from './CartAbandonmentTab'
 
 interface WAConfig { phone_number_id?: string; phone_display?: string; verified?: boolean; monthly_conversations_used?: number }
 interface Template { id: string; template_name: string; status: string; body_text: string; header_text?: string; footer_text?: string; footer_text_raw?: string; variable_count: number; language: string; category: string; has_buttons: boolean; button_config?: { var_map?: Record<string, string>; button_text?: string; button_url?: string } }
@@ -46,7 +47,7 @@ function varLabel(name: string): string {
 }
 
 export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month }: Props) {
-  const [subTab, setSubTab] = useState<'campaigns' | 'templates' | 'contacts' | 'settings'>('campaigns')
+  const [subTab, setSubTab] = useState<'campaigns' | 'cart' | 'templates' | 'contacts' | 'settings'>('campaigns')
   const [config, setConfig] = useState<WAConfig>({})
   const [templates, setTemplates] = useState<Template[]>([])
   const [wayCampaigns, setWACampaigns] = useState<Campaign[]>([])
@@ -256,6 +257,7 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
       <div style={{ display: 'flex', borderBottom: '0.5px solid var(--border)', marginBottom: 20 }}>
         {[
           ['campaigns', `Campaigns (${wayCampaigns.length})`],
+          ['cart', 'Cart Abandonment'],
           ['templates', `Templates (${templates.length})`],
           ['contacts', `Contacts (${contacts.total || 0})`],
           ['settings', isConnected ? '✓ Connected' : 'Settings'],
@@ -449,6 +451,8 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
       )}
 
       {/* ── TEMPLATES ── */}
+      {subTab === 'cart' && <CartAbandonmentTab templates={templates} month={month} />}
+
       {subTab === 'templates' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
