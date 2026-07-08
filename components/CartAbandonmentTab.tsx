@@ -179,7 +179,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>Send messages at</div>
           <select value={sendHour} onChange={e => setSendHour(Number(e.target.value))}
-            style={{ background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)' }}>
+            style={{ background: '#0d0d0d', colorScheme: 'dark', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)' }}>
             {Array.from({ length: 24 }, (_, h) => (
               <option key={h} value={h}>{`${String(h).padStart(2, '0')}:00`}</option>
             ))}
@@ -212,7 +212,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
               <div style={{ flex: '1 1 260px' }}>
                 <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>Template</div>
                 <select value={s.template_name || ''} onChange={e => onPickTemplate(i, e.target.value)}
-                  style={{ width: '100%', background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)' }}>
+                  style={{ width: '100%', background: '#0d0d0d', colorScheme: 'dark', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)' }}>
                   <option value="">Choose an approved template…</option>
                   {approved.map(t => <option key={t.id} value={t.template_name}>{t.template_name}</option>)}
                 </select>
@@ -247,7 +247,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
                         <select value={isLiteral ? '__literal__' : (val || '')} onChange={e => {
                           const nv = e.target.value === '__literal__' ? ' ' : e.target.value
                           patchStep(i, { variable_map: { ...(s.variable_map || {}), [key]: nv } })
-                        }} style={{ background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '5px 8px', fontSize: 11, color: 'var(--text-primary)' }}>
+                        }} style={{ background: '#0d0d0d', colorScheme: 'dark', border: '0.5px solid var(--border)', borderRadius: 7, padding: '5px 8px', fontSize: 11, color: 'var(--text-primary)' }}>
                           <option value="">—</option>
                           {VAR_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
