@@ -1,15 +1,15 @@
 import { getSupabaseAdmin } from './supabase'
 
-// Shopify Admin GraphQL API. The REST PriceRule/DiscountCode resources used
-// previously are deprecated by Shopify (removal on the 2026 path), so discount
-// management now uses the GraphQL discount mutations.
+// Shopify Admin GraphQL API. Discounts, webhooks, and abandoned-checkout
+// polling all go through GraphQL — the REST Admin API is legacy (Oct 2024) and
+// new public apps must be GraphQL-only since April 2025.
 //
-// NOTE: the `shopify_price_rule_id` column (bigint) now stores the numeric part
-// of the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>). The function
+// NOTE: the `shopify_price_rule_id` column (bigint) stores the numeric part of
+// the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>). Function
 // names are kept for interface stability with existing callers.
-const API_VERSION = '2026-04'
+const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07' // latest stable
 
-async function shopifyGraphQL(
+export async function shopifyGraphQL(
   domain: string, token: string, query: string, variables?: Record<string, unknown>
 ) {
   const res = await fetch(`https://${domain}/admin/api/${API_VERSION}/graphql.json`, {
@@ -90,7 +90,7 @@ export async function createShopifyDiscountCode(
           title: `KORANT-${discountCode}`,
           code: discountCode,
           startsAt: new Date().toISOString(),
-          customerSelection: { all: true }, // deprecated but valid; "all customers"
+          customerSelection: { all: true },
           customerGets: { value, items: { all: true } },
           appliesOncePerCustomer: false,
         },
@@ -119,7 +119,6 @@ export async function updateShopifyDiscountCode(
   if (!client) return false
 
   try {
-    // GraphQL updates the code on the same node directly — no delete/recreate.
     const data = await shopifyGraphQL(
       client.shopify_domain, client.shopify_token,
       `mutation Update($id: ID!, $basicCodeDiscount: DiscountCodeBasicInput!) {
@@ -176,7 +175,6 @@ export async function deleteShopifyPriceRule(
 
 export async function verifyShopifyWebhook(request: Request, secret: string): Promise<boolean> {
   const body = await request.text()
-  // Support both old X-Shopify-Hmac-Sha256 and new shopify-hmac-sha256 header formats (2026-01+)
   const hmac = request.headers.get('X-Shopify-Hmac-Sha256')
     || request.headers.get('x-shopify-hmac-sha256')
     || request.headers.get('shopify-hmac-sha256')
@@ -222,7 +220,6 @@ export async function registerShopifyOrderWebhooks(
       const errs = data?.webhookSubscriptionCreate?.userErrors || []
       if (errs.length) {
         const msg = errs.map((e: any) => e.message).join('; ')
-        // "address for this topic has already been taken" = already subscribed → fine.
         if (!/taken|already/i.test(msg)) console.error(`Webhook ${topic} error:`, msg)
       }
     } catch (e) {
@@ -253,10 +250,10 @@ export async function verifyShopifyHmacRaw(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cart-abandonment addition: subscribe the connected app to CHECKOUT webhooks so
-// ABANDONED CARTS flow in (Shopify fires these when a shopper reaches checkout
-// and enters details but doesn't pay). Same pattern as registerShopifyOrderWebhooks
-// above; duplicate-topic errors are ignored. Called from the OAuth callback.
+// Cart-abandonment: subscribe the connected app to CHECKOUT webhooks so
+// abandoned carts flow in as they happen (Shopify fires these when a shopper
+// reaches checkout and enters details but doesn't pay). Duplicate-topic errors
+// are ignored. Called from the OAuth callback.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function registerShopifyCheckoutWebhooks(
   domain: string, token: string, callbackUrl: string
@@ -277,11 +274,108 @@ export async function registerShopifyCheckoutWebhooks(
       const errs = data?.webhookSubscriptionCreate?.userErrors || []
       if (errs.length) {
         const msg = errs.map((e: any) => e.message).join('; ')
-        // "address for this topic has already been taken" = already subscribed → fine.
         if (!/taken|already/i.test(msg)) console.error(`Webhook ${topic} error:`, msg)
       }
     } catch (e) {
       console.error(`Webhook ${topic} registration failed:`, e)
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Abandoned-checkout POLLING via the GraphQL Admin `abandonedCheckouts` query
+// (2026-07). This is the reliable modern path — it covers stores on Checkout
+// Extensibility regardless of webhook delivery. Requires the `read_orders`
+// scope (already requested at install) and Protected Customer Data approval in
+// the Partner dashboard for the customer/address fields.
+//
+// Fully external checkouts (GoKwik / Razorpay Magic / custom headless) never
+// create AbandonedCheckout records in Shopify at all; those integrate through
+// the platform-neutral /api/webhook/cart endpoint instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PolledAbandonedCheckout {
+  externalId: string
+  phone: string | null
+  email: string | null
+  name: string | null
+  optedIn: boolean
+  totalPrice: number
+  currency: string
+  items: { title?: string; qty?: number }[]
+  recoveryUrl: string | null
+}
+
+// Extract the checkout token from an abandonedCheckoutUrl
+// (…/checkouts/<token>/recover) so polled carts dedupe against carts already
+// captured by the CHECKOUTS_* webhooks, which use checkout.token as external_id.
+function tokenFromRecoveryUrl(url: string | null | undefined): string | null {
+  const m = String(url || '').match(/\/checkouts\/([A-Za-z0-9]+)/)
+  return m ? m[1] : null
+}
+
+export async function fetchShopifyAbandonedCheckouts(
+  clientId: string,
+  updatedSinceIso: string
+): Promise<PolledAbandonedCheckout[]> {
+  const client = await getClientShopify(clientId)
+  if (!client) return []
+
+  const search = `updated_at:>='${updatedSinceIso}'`
+  const core = `
+    id
+    abandonedCheckoutUrl
+    createdAt
+    updatedAt
+    totalPriceSet { shopMoney { amount currencyCode } }
+    lineItems(first: 10) { nodes { title quantity } }
+    billingAddress { name phone }
+    shippingAddress { phone }`
+
+  // Primary query includes customer identity + SMS marketing consent. If Meta-
+  // data fields shift between API versions, fall back to a minimal field set
+  // (those carts are stored but not messageable until consent is known).
+  const withCustomer = `query Polled($q: String) {
+    abandonedCheckouts(first: 50, query: $q) { nodes {
+      ${core}
+      customer { firstName lastName email phone smsMarketingConsent { marketingState } }
+    } } }`
+  const minimal = `query Polled($q: String) {
+    abandonedCheckouts(first: 50, query: $q) { nodes { ${core} } } }`
+
+  let nodes: any[] = []
+  try {
+    const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, withCustomer, { q: search })
+    nodes = data?.abandonedCheckouts?.nodes || []
+  } catch {
+    try {
+      const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, minimal, { q: search })
+      nodes = data?.abandonedCheckouts?.nodes || []
+    } catch (e) {
+      console.error('[shopify poll] abandonedCheckouts query failed', { clientId, e: String(e) })
+      return []
+    }
+  }
+
+  return nodes.map((n: any): PolledAbandonedCheckout => {
+    const cust = n.customer || {}
+    const phone = cust.phone
+      || n.shippingAddress?.phone
+      || n.billingAddress?.phone
+      || null
+    // WhatsApp opt-in ≈ SMS channel consent. STRICT boolean on the enum state —
+    // never truthiness of the consent object (that bug opted in decliners).
+    const optedIn = String(cust?.smsMarketingConsent?.marketingState || '').toUpperCase() === 'SUBSCRIBED'
+    return {
+      externalId: tokenFromRecoveryUrl(n.abandonedCheckoutUrl) || gidToNumericId(n.id).toString(),
+      phone,
+      email: cust.email || null,
+      name: cust.firstName ? `${cust.firstName} ${cust.lastName || ''}`.trim() : (n.billingAddress?.name || null),
+      optedIn,
+      totalPrice: parseFloat(n.totalPriceSet?.shopMoney?.amount || '0'),
+      currency: n.totalPriceSet?.shopMoney?.currencyCode || 'INR',
+      items: (n.lineItems?.nodes || []).map((li: any) => ({ title: li.title, qty: li.quantity })),
+      recoveryUrl: n.abandonedCheckoutUrl || null,
+    }
+  })
 }
