@@ -1,17 +1,27 @@
-// ┌──────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  app/api/payouts/generate/route.ts
-// │ Replace the existing file at <repo-root>/app/api/payouts/generate/route.ts
-// └──────────────────────────────────────────────────────────────────────┘
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/payouts/generate/route.ts                              │
+// │                                                                            │
+// │ POST /api/payouts/generate                                                 │
+// │ Rules:                                                                     │
+// │   - Current month selected → period is 1st of month to TODAY (inclusive)   │
+// │   - Past month selected   → period is 1st to last day of that full month   │
+// │   - Future month          → rejected                                       │
+// │   - Regenerating same month → UPSERT, updates with latest figures          │
+// │                                                                            │
+// │ BUG FIX (over-payment): the commission fallback fired on ANY falsy         │
+// │ commission_amount — including a deliberate 0 — and recomputed from         │
+// │ commission_value WITHOUT checking commission_trigger (which the query      │
+// │ didn't even select). attributeSale() writes 0 on purpose when the trigger  │
+// │ is 'none' or 'per_lead'; the payout then paid a percentage anyway. Real    │
+// │ money out the door. The trigger is now selected and respected, and the     │
+// │ fallback only applies to rows where commission_amount is genuinely absent  │
+// │ (null/undefined), not zero.                                                │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
+export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
-// POST /api/payouts/generate
-// Rules:
-//   - Current month selected → period is 1st of month to TODAY (inclusive)
-//   - Past month selected   → period is 1st to last day of that full month
-//   - Future month         → rejected
-//   - Regenerating same month → UPSERT, updates with latest figures
 export async function POST(req: NextRequest) {
   const clientId = req.headers.get('x-user-id')
   const role     = req.headers.get('x-user-role')
@@ -23,6 +33,10 @@ export async function POST(req: NextRequest) {
   if (affiliateId && influencerId)   return NextResponse.json({ error: 'Pass only one of affiliateId / influencerId' }, { status: 400 })
   const isInfluencer = !!influencerId
   const partnerId    = (influencerId || affiliateId) as string
+
+  if (month && !/^\d{4}-\d{2}$/.test(String(month))) {
+    return NextResponse.json({ error: 'month must be YYYY-MM' }, { status: 400 })
+  }
 
   // Work in IST (Asia/Kolkata) so a payout "for June" covers the Indian calendar
   // month and matches how clicks/sales are bucketed in the DB. formatToParts is
@@ -59,15 +73,37 @@ export async function POST(req: NextRequest) {
 
   const sb = getSupabaseAdmin()
 
-  const table = isInfluencer ? 'influencers' : 'affiliates'
-  const { data: partner, error: pErr } = await sb
-    .from(table)
-    .select('id, name, handle, commission_type, commission_value, client_id, created_at' + (isInfluencer ? ', fee' : ''))
-    .eq('id', partnerId)
-    .eq('client_id', clientId)
-    .single()
+  // Static selects per branch. The old code concatenated the column list
+  // (`'...' + (isInfluencer ? ', fee' : '')`), which Supabase's type parser
+  // can't read — every field access on the result was typed GenericStringError.
+  interface PartnerRow {
+    id: string
+    name: string
+    handle: string | null
+    commission_type: string | null
+    commission_value: number | null
+    commission_trigger: string | null
+    client_id: string
+    created_at: string
+    fee?: number | null
+  }
 
-  if (pErr || !partner) return NextResponse.json({ error: `${isInfluencer ? 'Influencer' : 'Affiliate'} not found` }, { status: 404 })
+  let partner: PartnerRow | null = null
+  if (isInfluencer) {
+    const { data } = await sb
+      .from('influencers')
+      .select('id, name, handle, commission_type, commission_value, commission_trigger, client_id, created_at, fee')
+      .eq('id', partnerId).eq('client_id', clientId).maybeSingle()
+    partner = (data as PartnerRow) || null
+  } else {
+    const { data } = await sb
+      .from('affiliates')
+      .select('id, name, handle, commission_type, commission_value, commission_trigger, client_id, created_at')
+      .eq('id', partnerId).eq('client_id', clientId).maybeSingle()
+    partner = (data as PartnerRow) || null
+  }
+
+  if (!partner) return NextResponse.json({ error: `${isInfluencer ? 'Influencer' : 'Affiliate'} not found` }, { status: 404 })
 
   // ── Fetch sales in the period ──────────────────────────────────────────
   const { data: events } = await sb
@@ -82,18 +118,31 @@ export async function POST(req: NextRequest) {
 
   const salesCount   = events?.length || 0
   const totalRevenue = (events || []).reduce((s, e) => s + (e.order_value || 0), 0)
-  const commission   = (events || []).reduce((s, e) => {
-    if (e.commission_amount) return s + e.commission_amount
-    // Fallback when a sale row has no precomputed commission_amount: mirror the
-    // attribution math — flat = fixed value, percentage = order_value * value / 100.
-    const v = partner.commission_value || 0
-    return s + (partner.commission_type === 'flat' ? v : (e.order_value || 0) * v / 100)
+
+  // Does this partner earn per-sale commission at all? attributeSale() applies
+  // exactly this rule when it writes commission_amount, so the payout must
+  // apply it too — otherwise a partner with a value but trigger 'none' gets
+  // paid a percentage of every order.
+  const commissionValue   = Number(partner.commission_value) || 0
+  const commissionTrigger = partner.commission_trigger || 'per_sale'
+  const earnsPerSale      = commissionValue > 0 && commissionTrigger === 'per_sale'
+
+  const commission = (events || []).reduce((s, e) => {
+    // A stored 0 is a real, deliberate value — only fall back when the column
+    // is genuinely absent (legacy rows written before commission_amount).
+    if (e.commission_amount !== null && e.commission_amount !== undefined) {
+      return s + Number(e.commission_amount)
+    }
+    if (!earnsPerSale) return s
+    return s + (partner!.commission_type === 'flat'
+      ? commissionValue
+      : (e.order_value || 0) * commissionValue / 100)
   }, 0)
 
   // Influencers can also carry a flat retainer (`fee`). Include it once per
   // generated payout unless the caller opts out (includeFee === false) — useful
   // for a recurring monthly commission run that must not re-charge a one-time fee.
-  const fee    = isInfluencer && includeFee !== false ? (Number((partner as any).fee) || 0) : 0
+  const fee    = isInfluencer && includeFee !== false ? (Number(partner.fee) || 0) : 0
   const amount = Math.round((commission + fee) * 100) / 100
 
   if (salesCount === 0 && amount === 0) {
