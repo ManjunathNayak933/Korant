@@ -173,15 +173,37 @@ export async function submitTemplate(config: WAConfig, wabaId: string, template:
 
 // ── Sending ────────────────────────────────────────────────────────────────
 
+// Meta's BUTTONS component holds a mixed list: QUICK_REPLY, PHONE_NUMBER,
+// URL (static) and URL (dynamic). Only the DYNAMIC one — whose url ends in a
+// {{1}} placeholder — accepts a parameter at send time. Passing a parameter to
+// any of the others gets the whole message rejected (132000 / 131009).
+//
+// `whatsapp_templates.has_buttons` is true for all four, so it must NOT be used
+// to decide this. Returns the button's index within the component (Meta needs
+// the real position, not a hardcoded 0), or -1 when there isn't one.
+export function findDynamicUrlButtonIndex(buttonConfig: any): number {
+  const buttons = buttonConfig?.buttons
+  if (!Array.isArray(buttons)) return -1
+  for (let i = 0; i < buttons.length; i++) {
+    const b = buttons[i] || {}
+    if (String(b.type || '').toUpperCase() !== 'URL') continue
+    if (String(b.url || '').includes('{{')) return i
+  }
+  return -1
+}
+
 export interface SendMessageParams {
   to: string // phone number with country code, no +
   templateName: string
   language: string
   variables: string[] // positional: {{1}}, {{2}}, ...
   trackingUrl?: string
-  // Whether the template was created with a URL button. The button component
-  // is only attached when this is true — sending a button parameter against a
-  // button-less template makes Meta reject the entire message.
+  // Index of the template's DYNAMIC url button (see findDynamicUrlButtonIndex).
+  // -1 / omitted → no button component is attached and the link is expected to
+  // travel in the body instead. The old `hasButtons` boolean is kept for
+  // existing callers but only means "index 0" — prefer urlButtonIndex.
+  urlButtonIndex?: number
+  /** @deprecated use urlButtonIndex */
   hasButtons?: boolean
 }
 
@@ -195,13 +217,15 @@ export async function sendTemplateMessage(
   if (bodyParams.length > 0) {
     components.push({ type: 'body', parameters: bodyParams })
   }
-  // Inject tracking URL as button URL parameter ({{1}} in template button URL)
-  // — but ONLY for templates that actually carry a URL button.
-  if (params.trackingUrl && params.hasButtons) {
+  // Inject the tracking slug as the button's URL parameter ({{1}} in the
+  // template's button url) — ONLY when the template really has a dynamic URL
+  // button, and at that button's real index.
+  const btnIndex = params.urlButtonIndex ?? (params.hasButtons ? 0 : -1)
+  if (params.trackingUrl && btnIndex >= 0) {
     components.push({
       type: 'button',
       sub_type: 'url',
-      index: '0',
+      index: String(btnIndex),
       parameters: [{ type: 'text', text: params.trackingUrl }],
     })
   }
