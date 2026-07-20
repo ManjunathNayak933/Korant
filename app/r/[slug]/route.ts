@@ -1,3 +1,11 @@
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/r/[slug]/route.ts                                          │
+// │                                                                            │
+// │ The click redirect. Every tracking link in the product lands here:         │
+// │ influencer links, affiliate links, WhatsApp broadcast links, and           │
+// │ cart-recovery links. Resolves the slug, sends the visitor where they       │
+// │ should go, and logs the click in the background.                           │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getRequestContext } from '@cloudflare/next-on-pages'
@@ -20,13 +28,23 @@ function background(p: Promise<unknown>) {
   }
 }
 
-// Route a code-bearing partner click through Shopify's /discount/<code> URL.
-// Shopify applies the discount to the visitor's checkout SESSION and then
-// redirects to the real destination — so the discount (and thus the order's
+// NextResponse.redirect() runs the URL through `new URL()` and THROWS on a
+// relative path ("URL is malformed \"/\"" — Next E61). The old code fell back
+// to '/' for any unresolved slug, so every unknown link returned a 500 instead
+// of a redirect. Everything below funnels through this: absolute in, or the
+// app's own base URL as a last resort.
+function safeAbsolute(dest: string, base: string): string {
+  const b = base || 'https://www.microkorant.in'
+  if (!dest) return b
+  try { return new URL(dest).toString() } catch { /* relative — resolve below */ }
+  try { return new URL(dest, b).toString() } catch { return b }
+}
+
+// Route a code-bearing click through Shopify's /discount/<code> URL. Shopify
+// applies the discount to the visitor's checkout SESSION and then redirects to
+// the real destination — so the discount (and thus the order's
 // discount_codes[]) survives EVERY checkout path, including the ones that skip
-// the cart: "Buy it now" and Shop Pay / wallet express buttons. The order
-// webhook already attributes by discount code, so this needs no cart attribute
-// and closes the cart-bypass gap for any partner that has a code.
+// the cart: "Buy it now" and Shop Pay / wallet express buttons.
 function buildShopifyDiscountUrl(dest: string, code: string, shopDomain: string): string {
   const c = encodeURIComponent(code)
   try {
@@ -47,7 +65,15 @@ export async function GET(
   request: NextRequest,
   context: { params: Promise<{ slug: string }> }
 ) {
-  const { slug } = await context.params
+  const { slug: rawSlug } = await context.params
+  const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || ''
+
+  // Cart-abandonment links carry a per-cart suffix: `<step-slug>.<cartId>`.
+  // Everything before the first dot is the slug we resolve; the remainder
+  // identifies the individual shopper's cart.
+  const dot = rawSlug.indexOf('.')
+  const slug = dot > 0 ? rawSlug.slice(0, dot) : rawSlug
+  const cartId = dot > 0 ? rawSlug.slice(dot + 1) : null
 
   // 1 KV read on warm cache (was 2-3 Postgres queries)
   const link = await resolveLink(slug)
@@ -56,15 +82,27 @@ export async function GET(
   const isNewVisitor = !visitorId
   if (!visitorId) visitorId = generateVisitorId()
 
-  // Build + return the redirect immediately. For a partner that carries a
-  // discount code on a Shopify store, route through the /discount session URL
-  // (see buildShopifyDiscountUrl) so attribution survives cart-bypassing
-  // checkouts. Everyone else goes straight to their destination.
-  const baseDest = link?.destinationUrl || '/'
+  // For a cart link, the destination is THAT SHOPPER'S OWN recovery URL — the
+  // Shopify checkout-resume link captured at intake. Previously the message
+  // only ever carried a static per-step slug with no destination at all, so
+  // nobody was ever returned to their cart.
+  let baseDest = link?.destinationUrl || ''
+  if (link?.found && link.channel === 'cart' && cartId) {
+    const sb = getSupabaseAdmin()
+    const { data: cart } = await sb
+      .from('abandoned_carts')
+      .select('recovery_url, client_id')
+      .eq('id', cartId).eq('client_id', link.clientId).maybeSingle()
+    if (cart?.recovery_url) baseDest = cart.recovery_url
+  }
+  // Still nothing? Send them to the storefront rather than a dead end.
+  if (!baseDest && link?.shopDomain) baseDest = `https://${link.shopDomain}`
+
   const destUrl = (link?.found && link.discountCode && link.shopDomain)
     ? buildShopifyDiscountUrl(baseDest, link.discountCode, link.shopDomain)
-    : baseDest
-  const res = NextResponse.redirect(destUrl, 302)
+    : safeAbsolute(baseDest, base)
+
+  const res = NextResponse.redirect(safeAbsolute(destUrl, base), 302)
 
   const cookies: string[] = []
   if (isNewVisitor) cookies.push(buildVisitorCookie(visitorId))
@@ -108,6 +146,18 @@ export async function GET(
         if (error) console.error('record_click failed', error)
       })
     )
+
+    // Mark the click on the cart message so the funnel can show click-through
+    // per step. Best-effort, never blocks the redirect.
+    if (link.channel === 'cart' && cartId && link.cartStepNo) {
+      background(
+        Promise.resolve(
+          sb.from('cart_messages')
+            .update({ clicked_at: new Date().toISOString() })
+            .eq('cart_id', cartId).eq('step_no', link.cartStepNo).is('clicked_at', null)
+        ).then(() => {}).catch(() => {})
+      )
+    }
   }
 
   return res
