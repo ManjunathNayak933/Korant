@@ -1,0 +1,30 @@
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ REPO PATH:  worker/cron/wrangler.toml   (NEW)                              │
+# │                                                                            │
+# │ Cloudflare PAGES cannot hold a native cron trigger — only Workers can.     │
+# │ This is that Worker: a ~20-line scheduler that pings the app's             │
+# │ /api/cron/cart-abandonment endpoint every hour with the shared secret.     │
+# │                                                                            │
+# │ Deploy (from repo root):                                                  │
+# │   cd worker/cron                                                           │
+# │   npx wrangler secret put CRON_SECRET      # same value as the Pages env   │
+# │   npx wrangler deploy                                                      │
+# │                                                                            │
+# │ Verify:  npx wrangler tail korant-cron                                     │
+# └──────────────────────────────────────────────────────────────────────────┘
+name = "korant-cron"
+main = "index.ts"
+compatibility_date = "2026-07-01"
+
+[triggers]
+# Hourly, on the hour. Each cart's exact send time is stored in next_step_at at
+# the brand's chosen IST hour — the tick simply picks up whatever is due, so an
+# hourly cadence gives at-most-1-hour latency without over-sending.
+crons = ["0 * * * *"]
+
+[vars]
+# The deployed app origin. Override per environment.
+KORANT_BASE_URL = "https://app.korant.in"
+
+# CRON_SECRET is a SECRET, not a var — set it with:
+#   npx wrangler secret put CRON_SECRET
