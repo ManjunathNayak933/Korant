@@ -1,7 +1,6 @@
 'use client'
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  components/CartAbandonmentTab.tsx   (NEW FILE)                   │
-// │ Create at <repo-root>/components/CartAbandonmentTab.tsx                     │
+// │ REPO PATH:  components/CartAbandonmentTab.tsx                              │
 // │                                                                            │
 // │ The "Cart Abandonment" sub-tab, mounted inside WhatsAppDashboard between    │
 // │ Campaigns and Templates. Two halves: (1) KPIs — carts detected → per-       │
@@ -9,7 +8,10 @@
 // │ (2) the sequence builder — up to 3 steps, each with an approved template,   │
 // │ a days delay, an optional coupon, and its own tracking link.               │
 // │                                                                            │
-// │ Styling matches the existing dashboard: inline styles + CSS vars.          │
+// │ Fixes: load() is wrapped (a failed request used to leave the tab stuck on  │
+// │ "Loading…" forever); the free-text timezone input is gone (an invalid IANA │
+// │ name crashed the intake webhook and the whole cron run) — everything is    │
+// │ IST; and 0 is now a real, storable value for delay/hour.                   │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { useState, useEffect } from 'react'
 
@@ -43,27 +45,45 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
 
   const [enabled, setEnabled] = useState(false)
   const [sendHour, setSendHour] = useState(10)
-  const [timezone, setTimezone] = useState('Asia/Kolkata')
   const [expiryDays, setExpiryDays] = useState(14)
   const [steps, setSteps] = useState<Step[]>([])
   const [stats, setStats] = useState<any>(null)
 
+  // Treat 0 as a real value. `x ?? d` (not `x || d`) throughout, so a saved
+  // send hour of 00:00 or a delay of 0 days round-trips instead of snapping
+  // back to the default.
+  const numOr = (v: any, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d)
+
   const load = async () => {
     setLoading(true)
-    const m = month || new Date().toISOString().slice(0, 7)
-    const [seqRes, statsRes] = await Promise.all([
-      fetch('/api/whatsapp/cart-sequence'),
-      fetch(`/api/whatsapp/cart-abandonment/stats?month=${m}`),
-    ])
-    const seq = await seqRes.json()
-    const st = await statsRes.json()
-    setEnabled(!!seq.sequence?.enabled)
-    setSendHour(seq.sequence?.send_hour ?? 10)
-    setTimezone(seq.sequence?.timezone || 'Asia/Kolkata')
-    setExpiryDays(seq.sequence?.expiry_days ?? 14)
-    setSteps((seq.steps || []).map((s: any) => ({ ...s })))
-    setStats(st)
-    setLoading(false)
+    setError('')
+    try {
+      const [seqRes, statsRes] = await Promise.all([
+        fetch('/api/whatsapp/cart-sequence'),
+        fetch(`/api/whatsapp/cart-abandonment/stats?month=${month || new Date().toISOString().slice(0, 7)}`),
+      ])
+      if (!seqRes.ok) throw new Error(`Couldn't load the sequence (${seqRes.status})`)
+
+      const seq: any = await seqRes.json()
+      setEnabled(!!seq.sequence?.enabled)
+      setSendHour(numOr(seq.sequence?.send_hour, 10))
+      setExpiryDays(numOr(seq.sequence?.expiry_days, 14))
+      setSteps((seq.steps || []).map((s: any) => ({ ...s })))
+
+      // Stats are secondary — a failure there shouldn't hide the builder.
+      if (statsRes.ok) {
+        setStats(await statsRes.json())
+      } else {
+        setStats(null)
+        setError('Sequence loaded, but the numbers above could not be fetched. Try refreshing.')
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Could not load cart abandonment settings. Try refreshing.')
+    } finally {
+      // ALWAYS runs — the old code called this after the awaits, so any thrown
+      // response left the tab spinning indefinitely.
+      setLoading(false)
+    }
   }
   useEffect(() => { load() /* eslint-disable-next-line */ }, [month])
 
@@ -82,28 +102,40 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
 
   const save = async () => {
     setError(''); setNotice(''); setSaving(true)
-    // Guard: an enabled sequence needs at least one step with a template.
-    if (enabled && (steps.length === 0 || steps.some(s => !s.template_name))) {
-      setError('Every step needs an approved template before you can turn the sequence on.')
-      setSaving(false); return
+    // Guard: an enabled sequence needs at least one ENABLED step with a template.
+    if (enabled) {
+      const live = steps.filter(s => s.enabled !== false && s.template_name)
+      if (live.length === 0) {
+        setError('Turn on at least one message with an approved template before activating the sequence.')
+        setSaving(false); return
+      }
+      if (steps.some(s => !s.template_name)) {
+        setError('Every message needs an approved template before you can turn the sequence on.')
+        setSaving(false); return
+      }
     }
-    const res = await fetch('/api/whatsapp/cart-sequence', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        enabled, send_hour: sendHour, timezone, expiry_days: expiryDays,
-        steps: steps.map((s, i) => ({
-          step_no: i + 1, enabled: s.enabled !== false, delay_days: s.delay_days ?? 1,
-          template_id: s.template_id, template_name: s.template_name, language: s.language || 'en',
-          variable_map: s.variable_map || {}, coupon_code: s.coupon_code || null,
-        })),
-      }),
-    })
-    const json = await res.json()
-    setSaving(false)
-    if (!res.ok) { setError(json.error || 'Save failed'); return }
-    setSteps((json.steps || []).map((s: any) => ({ ...s })))
-    setNotice(json.warnings?.length ? json.warnings.join(' ') : 'Saved.')
+    try {
+      const res = await fetch('/api/whatsapp/cart-sequence', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled, send_hour: sendHour, expiry_days: expiryDays,
+          steps: steps.map((s, i) => ({
+            step_no: i + 1, enabled: s.enabled !== false, delay_days: numOr(s.delay_days, 1),
+            template_id: s.template_id, template_name: s.template_name, language: s.language || 'en',
+            variable_map: s.variable_map || {}, coupon_code: s.coupon_code || null,
+          })),
+        }),
+      })
+      const json: any = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || `Save failed (${res.status})`); return }
+      setSteps((json.steps || []).map((s: any) => ({ ...s })))
+      setNotice(json.warnings?.length ? json.warnings.join(' ') : 'Saved.')
+    } catch (e: any) {
+      setError(e?.message || 'Save failed — check your connection and try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const money = (n: number) =>
@@ -174,8 +206,8 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
         </label>
       </div>
 
-      {/* schedule controls */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
+      {/* schedule controls — all times are IST */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8, alignItems: 'flex-end' }}>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>Send messages at</div>
           <select value={sendHour} onChange={e => setSendHour(Number(e.target.value))}
@@ -185,16 +217,16 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
             ))}
           </select>
         </div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>Timezone</div>
-          <input value={timezone} onChange={e => setTimezone(e.target.value)}
-            style={{ background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)', width: 150 }} />
-        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', paddingBottom: 8 }}>IST (Asia/Kolkata)</div>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>Stop chasing after (days)</div>
-          <input type="number" min={1} value={expiryDays} onChange={e => setExpiryDays(Number(e.target.value))}
+          <input type="number" min={1} max={90} value={expiryDays}
+            onChange={e => setExpiryDays(numOr(e.target.value, 14))}
             style={{ background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)', width: 90 }} />
         </div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 20 }}>
+        All sends happen at this hour, India time. A delay of 0 days means “later today at this hour, or tomorrow if it has already passed”.
       </div>
 
       {/* steps */}
@@ -202,10 +234,16 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
         const t = approved.find(x => x.template_name === s.template_name)
         const varCount = t?.variable_count || 0
         return (
-          <div key={i} style={{ border: '0.5px solid var(--border)', borderRadius: 9, padding: 16, marginBottom: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div key={i} style={{ border: '0.5px solid var(--border)', borderRadius: 9, padding: 16, marginBottom: 12, opacity: s.enabled === false ? 0.55 : 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>Message {i + 1}</div>
-              <button onClick={() => removeStep(i)} style={{ background: 'transparent', border: 'none', color: 'var(--red)', fontSize: 11, cursor: 'pointer' }}>Remove</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={s.enabled !== false} onChange={e => patchStep(i, { enabled: e.target.checked })} />
+                  {s.enabled !== false ? 'On' : 'Off'}
+                </label>
+                <button onClick={() => removeStep(i)} style={{ background: 'transparent', border: 'none', color: 'var(--red)', fontSize: 11, cursor: 'pointer' }}>Remove</button>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -217,12 +255,13 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
                   {approved.map(t => <option key={t.id} value={t.template_name}>{t.template_name}</option>)}
                 </select>
                 {approved.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>No approved templates yet — create one in the Templates tab and wait for Meta approval.</div>
+                  <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>No approved templates yet — create one in the Templates tab and wait for Meta approval. Carts abandoned meanwhile are held, not skipped.</div>
                 )}
               </div>
               <div style={{ width: 130 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>{i === 0 ? 'Days after abandon' : 'Days after prev.'}</div>
-                <input type="number" min={0} value={s.delay_days ?? 1} onChange={e => patchStep(i, { delay_days: Number(e.target.value) })}
+                <input type="number" min={0} max={30} value={s.delay_days ?? 1}
+                  onChange={e => patchStep(i, { delay_days: numOr(e.target.value, 1) })}
                   style={{ width: '100%', background: 'var(--input-bg, transparent)', border: '0.5px solid var(--border)', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: 'var(--text-primary)' }} />
               </div>
               <div style={{ width: 150 }}>
@@ -265,6 +304,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
             {s.tracking_link && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 Tracking link: <span style={{ color: 'var(--blue)', wordBreak: 'break-all' }}>{s.tracking_link}</span>
+                <span style={{ color: 'var(--text-dim)' }}> — each shopper gets their own version of this, which reopens their cart.</span>
               </div>
             )}
           </div>
