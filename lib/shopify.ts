@@ -309,8 +309,13 @@ export interface PolledAbandonedCheckout {
 // Extract the checkout token from an abandonedCheckoutUrl
 // (…/checkouts/<token>/recover) so polled carts dedupe against carts already
 // captured by the CHECKOUTS_* webhooks, which use checkout.token as external_id.
+// Stores on Checkout Extensibility serve `…/checkouts/cn/<token>/recover`, and
+// the old pattern captured the literal `cn` for every one of them — so every
+// polled cart shared one external_id, overwrote the same row, and polling died
+// once that row completed. Skip the `cn/` segment, and allow `-`/`_` since
+// modern tokens aren't strictly alphanumeric.
 function tokenFromRecoveryUrl(url: string | null | undefined): string | null {
-  const m = String(url || '').match(/\/checkouts\/([A-Za-z0-9]+)/)
+  const m = String(url || '').match(/\/checkouts\/(?:cn\/)?([A-Za-z0-9_-]+)/)
   return m ? m[1] : null
 }
 
