@@ -24,7 +24,7 @@ crons = ["0 * * * *"]
 
 [vars]
 # The deployed app origin. Override per environment.
-KORANT_BASE_URL = "https://app.korant.in"
+KORANT_BASE_URL = "https://www.microkorant.in"
 
 # CRON_SECRET is a SECRET, not a var — set it with:
 #   npx wrangler secret put CRON_SECRET
