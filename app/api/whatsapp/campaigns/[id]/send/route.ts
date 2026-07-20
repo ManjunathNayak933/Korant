@@ -1,13 +1,46 @@
-// ┌──────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  app/api/whatsapp/campaigns/[id]/send/route.ts              │
-// │ Replace the existing file at <repo-root>/app/api/whatsapp/campaigns/[id]/send/route.ts │
-// └──────────────────────────────────────────────────────────────────────┘
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/whatsapp/campaigns/[id]/send/route.ts                  │
+// │                                                                            │
+// │ Two fixes here:                                                            │
+// │  1. waitUntil is now obtained the SAME way as everywhere else in the app   │
+// │     (getRequestContext() from @cloudflare/next-on-pages). This file was    │
+// │     the only place reaching for the undocumented                            │
+// │     `request[Symbol.for('cloudflare-request-context')]` internal. If that  │
+// │     symbol ever changes shape, the check silently falls through to the     │
+// │     "local dev" branch — which on Workers means the send is killed the     │
+// │     moment the response returns, stranding the campaign in 'sending'       │
+// │     forever with contacts half-messaged. One helper, both mechanisms,      │
+// │     with the fallback last.                                                │
+// │  2. The URL-button component is only attached when the template actually   │
+// │     has buttons — Meta rejects the whole send otherwise (see hasButtons    │
+// │     in lib/whatsapp.ts).                                                   │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
+import { getRequestContext } from '@cloudflare/next-on-pages'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { getWAConfig, sendTemplateMessage } from '@/lib/whatsapp'
 
 export const dynamic = 'force-dynamic'
+
+// Keep a long-running task alive past the response. Tries the documented
+// next-on-pages context first, then the raw request symbol, then falls back to
+// fire-and-forget for `next dev`.
+function runInBackground(request: NextRequest, task: () => Promise<void>) {
+  try {
+    getRequestContext().ctx.waitUntil(task())
+    return
+  } catch { /* not running on Pages — try the next mechanism */ }
+
+  const ctx = (request as any)[Symbol.for('cloudflare-request-context')]
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(task())
+    return
+  }
+
+  // Local dev (Next.js dev server) — no waitUntil, just don't await it.
+  task().catch(console.error)
+}
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const userId = request.headers.get('x-user-id')!
@@ -69,79 +102,82 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: 'Send already in progress or completed' }, { status: 409 })
   }
 
-  // Use waitUntil so the worker keeps running after the response is sent.
-  // The browser gets an immediate "started" response; frontend polls /stats for progress.
-  const ctx = (request as any)[Symbol.for('cloudflare-request-context')]
   const sendInBackground = async () => {
-    const trackingLink = `${process.env.NEXT_PUBLIC_BASE_URL}/r/${campaign.tracking_slug}`
+    const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || ''
+    const trackingLink = `${base}/r/${campaign.tracking_slug}`
     const varMap = campaign.variable_map || {}
     let sent = 0, errors = 0
     const BATCH = 50
 
-    for (let i = 0; i < contacts.length; i += BATCH) {
-      const batch = contacts.slice(i, i + BATCH)
-      await Promise.all(batch.map(async (contact: any) => {
-        const variables: string[] = []
-        for (let v = 1; v <= (template.variable_count || 0); v++) {
-          const key = varMap[`{{${v}}}`] || varMap[String(v)]
-          if (key === '__name__') variables.push(contact.name || 'there')
-          else if (key === '__link__') variables.push(trackingLink)
-          else if (key === '__custom__') variables.push(contact.custom_vars?.[`var${v}`] || '')
-          else variables.push(key || '')
-        }
+    try {
+      for (let i = 0; i < contacts.length; i += BATCH) {
+        const batch = contacts.slice(i, i + BATCH)
+        await Promise.all(batch.map(async (contact: any) => {
+          const variables: string[] = []
+          for (let v = 1; v <= (template.variable_count || 0); v++) {
+            const key = varMap[`{{${v}}}`] || varMap[String(v)]
+            if (key === '__name__') variables.push(contact.name || 'there')
+            else if (key === '__link__') variables.push(trackingLink)
+            else if (key === '__custom__') variables.push(contact.custom_vars?.[`var${v}`] || '')
+            else variables.push(key || '')
+          }
 
-        const result = await sendTemplateMessage(config, {
-          to: contact.phone,
-          templateName: campaign.template_name,
-          language: template.language || 'en',
-          variables,
-          // BUG FIX: the URL-button template is built as `base/{{1}}`, so the {{1}}
-          // value must be just the SLUG. Passing the full trackingLink here produced
-          // a doubled URL (`…/r/https://…/r/wa-xxx`). The body `__link__` variable
-          // still uses the full trackingLink (a full URL in message text is correct).
-          trackingUrl: campaign.tracking_slug,
-        })
-
-        if ('error' in result) {
-          errors++
-          await sb.from('whatsapp_messages').insert({
-            campaign_id: id, client_id: userId,
-            phone: contact.phone, contact_name: contact.name,
-            status: 'failed', error_message: result.error,
+          const result = await sendTemplateMessage(config, {
+            to: contact.phone,
+            templateName: campaign.template_name,
+            language: template.language || 'en',
+            variables,
+            // BUG FIX: the URL-button template is built as `base/{{1}}`, so the {{1}}
+            // value must be just the SLUG. Passing the full trackingLink here produced
+            // a doubled URL (`…/r/https://…/r/wa-xxx`). The body `__link__` variable
+            // still uses the full trackingLink (a full URL in message text is correct).
+            trackingUrl: campaign.tracking_slug,
+            // Only send the button component if the template really has one.
+            hasButtons: !!template.has_buttons,
           })
-        } else {
-          sent++
-          await sb.from('whatsapp_messages').insert({
-            campaign_id: id, client_id: userId,
-            wa_message_id: result.wa_message_id,
-            phone: contact.phone, contact_name: contact.name,
-            status: 'sent',
-          })
+
+          if ('error' in result) {
+            errors++
+            await sb.from('whatsapp_messages').insert({
+              campaign_id: id, client_id: userId,
+              phone: contact.phone, contact_name: contact.name,
+              status: 'failed', error_message: result.error,
+            })
+          } else {
+            sent++
+            await sb.from('whatsapp_messages').insert({
+              campaign_id: id, client_id: userId,
+              wa_message_id: result.wa_message_id,
+              phone: contact.phone, contact_name: contact.name,
+              status: 'sent',
+            })
+          }
+        }))
+
+        // Update progress after every batch so the UI can poll it
+        await sb.from('whatsapp_campaigns').update({ sent, updated_at: new Date().toISOString() }).eq('id', id)
+
+        // Small delay between batches — Meta allows ~80 req/sec
+        if (i + BATCH < contacts.length) {
+          await new Promise(r => setTimeout(r, 300))
         }
-      }))
-
-      // Update progress after every batch so the UI can poll it
-      await sb.from('whatsapp_campaigns').update({ sent, updated_at: new Date().toISOString() }).eq('id', id)
-
-      // Small delay between batches — Meta allows ~80 req/sec
-      if (i + BATCH < contacts.length) {
-        await new Promise(r => setTimeout(r, 300))
       }
+
+      // Final status
+      await sb.from('whatsapp_campaigns').update({
+        status: 'sent', sent, updated_at: new Date().toISOString(),
+      }).eq('id', id)
+    } catch (e) {
+      // Never leave the campaign stuck in 'sending' — that state blocks every
+      // future send attempt with a 409 and there's no way out from the UI.
+      console.error('[campaign send] failed', { id, e: String(e) })
+      await sb.from('whatsapp_campaigns').update({
+        status: 'failed', sent, updated_at: new Date().toISOString(),
+      }).eq('id', id)
     }
-
-    // Final status
-    await sb.from('whatsapp_campaigns').update({
-      status: 'sent', sent, updated_at: new Date().toISOString(),
-    }).eq('id', id)
   }
 
-  // If running on Cloudflare Workers, use waitUntil for non-blocking background execution
-  if (ctx?.waitUntil) {
-    ctx.waitUntil(sendInBackground())
-  } else {
-    // Local dev fallback — runs synchronously (Next.js dev server)
-    sendInBackground().catch(console.error)
-  }
+  runInBackground(request, sendInBackground)
 
   return NextResponse.json({
     ok: true,
