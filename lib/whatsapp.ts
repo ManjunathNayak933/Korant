@@ -1,10 +1,17 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/whatsapp.ts                                            │
-// │ Replace the existing file at <repo-root>/lib/whatsapp.ts              │
+// │                                                                        │
+// │ WhatsApp Business Cloud API (Meta Graph API). Two fixes worth noting: │
+// │  1. Templates live on the WABA node (`/{waba_id}/message_templates`), │
+// │     NOT the phone-number node — the old sync always 400'd, so no      │
+// │     template ever reached APPROVED locally.                            │
+// │  2. sendTemplateMessage only attaches a URL-button component when the │
+// │     template actually has buttons; Meta rejects the send otherwise.   │
 // └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 
-const META_VERSION = 'v25.0'
+// Graph API versions stay supported ~2 years; override per-deploy if needed.
+const META_VERSION = process.env.WHATSAPP_GRAPH_VERSION || 'v25.0'
 const META_BASE = `https://graph.facebook.com/${META_VERSION}`
 
 export interface WAConfig {
@@ -26,43 +33,61 @@ export async function getWAConfig(clientId: string): Promise<WAConfig | null> {
 
 // ── Templates ──────────────────────────────────────────────────────────────
 
+// Message templates are a WhatsApp Business Account (WABA) resource:
+//   GET /{waba_id}/message_templates
+// Paginates via `paging.next` (capped defensively at 5 pages / 500 templates).
 export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) {
-  const res = await fetch(
-    `${META_BASE}/${config.phone_number_id}/message_templates?limit=50`,
-    { headers: { Authorization: `Bearer ${config.access_token}` } }
-  )
-  if (!res.ok) throw new Error(`Meta templates fetch failed: ${res.status}`)
-  const json = await res.json()
-  const templates = json.data || []
+  const wabaId = config.waba_id
+  if (!wabaId) {
+    throw new Error(
+      'WABA ID missing. Templates are managed on the WhatsApp Business Account — ' +
+      'add your WABA ID in WhatsApp → Settings (Meta dashboard → WhatsApp → API Setup), then sync again.'
+    )
+  }
 
   const sb = getSupabaseAdmin()
-  for (const t of templates) {
-    const bodyComp = t.components?.find((c: any) => c.type === 'BODY')
-    const headerComp = t.components?.find((c: any) => c.type === 'HEADER')
-    const footerComp = t.components?.find((c: any) => c.type === 'FOOTER')
-    const buttonComp = t.components?.find((c: any) => c.type === 'BUTTONS')
-    const bodyText = bodyComp?.text || ''
-    const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
+  let url: string | null =
+    `${META_BASE}/${wabaId}/message_templates?limit=100&fields=id,name,status,category,language,components`
+  let total = 0
 
-    await sb.from('whatsapp_templates').upsert({
-      client_id: clientId,
-      template_name: t.name,
-      category: t.category,
-      language: t.language,
-      status: t.status,
-      header_text: headerComp?.text || null,
-      header_type: headerComp?.format || null,
-      header_media_url: headerComp?.example?.header_handle?.[0] || null,
-      body_text: bodyText,
-      footer_text: footerComp?.text || null,
-      has_buttons: !!buttonComp,
-      button_config: buttonComp || null,
-      variable_count: varCount,
-      meta_template_id: t.id,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'client_id,template_name,language' })
+  for (let page = 0; page < 5 && url; page++) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${config.access_token}` } })
+    const json: any = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(`Meta templates fetch failed: ${res.status} ${json?.error?.message || ''}`.trim())
+    }
+    const templates = json.data || []
+
+    for (const t of templates) {
+      const bodyComp = t.components?.find((c: any) => c.type === 'BODY')
+      const headerComp = t.components?.find((c: any) => c.type === 'HEADER')
+      const footerComp = t.components?.find((c: any) => c.type === 'FOOTER')
+      const buttonComp = t.components?.find((c: any) => c.type === 'BUTTONS')
+      const bodyText = bodyComp?.text || ''
+      const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
+
+      await sb.from('whatsapp_templates').upsert({
+        client_id: clientId,
+        template_name: t.name,
+        category: t.category,
+        language: t.language,
+        status: t.status,
+        header_text: headerComp?.text || null,
+        header_type: headerComp?.format || null,
+        header_media_url: headerComp?.example?.header_handle?.[0] || null,
+        body_text: bodyText,
+        footer_text: footerComp?.text || null,
+        has_buttons: !!buttonComp,
+        button_config: buttonComp || null,
+        variable_count: varCount,
+        meta_template_id: t.id,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'client_id,template_name,language' })
+    }
+    total += templates.length
+    url = json.paging?.next || null
   }
-  return templates.length
+  return total
 }
 
 
@@ -154,6 +179,10 @@ export interface SendMessageParams {
   language: string
   variables: string[] // positional: {{1}}, {{2}}, ...
   trackingUrl?: string
+  // Whether the template was created with a URL button. The button component
+  // is only attached when this is true — sending a button parameter against a
+  // button-less template makes Meta reject the entire message.
+  hasButtons?: boolean
 }
 
 export async function sendTemplateMessage(
@@ -167,7 +196,8 @@ export async function sendTemplateMessage(
     components.push({ type: 'body', parameters: bodyParams })
   }
   // Inject tracking URL as button URL parameter ({{1}} in template button URL)
-  if (params.trackingUrl) {
+  // — but ONLY for templates that actually carry a URL button.
+  if (params.trackingUrl && params.hasButtons) {
     components.push({
       type: 'button',
       sub_type: 'url',
@@ -202,15 +232,9 @@ export async function sendTemplateMessage(
 }
 
 // ── Estimate cost ──────────────────────────────────────────────────────────
-// Meta switched WhatsApp billing in July 2025 from per-24h-conversation to
-// PER DELIVERED TEMPLATE MESSAGE. The old "first 1000 conversations free /
-// ₹0.69 per conversation" model no longer applies to marketing. We now bill
-// per message at the India marketing template rate. The free entry-point /
-// service-conversation allowances are separate and not modelled here.
-//
-// NOTE: the per-message rate changes by country and over time — keep
-// MARKETING_RATE_INR aligned with Meta's current rate card before relying on
-// this for client-facing quotes.
+// Meta bills marketing PER DELIVERED TEMPLATE MESSAGE (since July 2025).
+// Keep MARKETING_RATE_INR aligned with Meta's current rate card before relying
+// on this for client-facing quotes.
 export function estimateCost(
   contactCount: number
 ): { inr: number; messages: number; conversations: number } {
