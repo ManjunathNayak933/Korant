@@ -1,7 +1,17 @@
-// ┌──────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  app/api/webhook/whatsapp/route.ts                          │
-// │ Replace the existing file at <repo-root>/app/api/webhook/whatsapp/route.ts │
-// └──────────────────────────────────────────────────────────────────────┘
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/webhook/whatsapp/route.ts                              │
+// │                                                                            │
+// │ BUG FIX: this only ever updated `whatsapp_messages` (campaign sends).      │
+// │ Cart-abandonment sends are logged to `cart_messages` with the same         │
+// │ wa_message_id, and nothing read it back — so a cart message stayed 'sent'  │
+// │ forever even when Meta reported it as failed, and the per-step "sent"      │
+// │ figure in the Cart Abandonment tab counted messages that never arrived.    │
+// │ Both tables are now updated from the same status event.                    │
+// │                                                                            │
+// │ Campaign roll-ups are also no longer recomputed on EVERY status callback   │
+// │ (that was 3 extra queries per event — ~30k on a 10k-contact campaign);     │
+// │ they run on terminal statuses only.                                        │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -45,9 +55,8 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text()
 
   // Verify the payload is really from Meta. FAIL CLOSED: if no app secret is
-  // configured we cannot authenticate the request, so we reject it (previously
-  // this fell through and processed unsigned requests). Set WHATSAPP_APP_SECRET
-  // (the Meta App Secret) to enable status webhooks.
+  // configured we cannot authenticate the request, so we reject it. Set
+  // WHATSAPP_APP_SECRET (the Meta App Secret) to enable status webhooks.
   const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || ''
   if (!appSecret) {
     console.error('[whatsapp webhook] rejected: WHATSAPP_APP_SECRET / META_APP_SECRET not configured')
@@ -64,6 +73,9 @@ export async function POST(request: NextRequest) {
   const sb = getSupabaseAdmin()
   const changes = body.entry?.[0]?.changes || []
 
+  // Campaigns whose totals need one roll-up at the end of this batch.
+  const campaignsToRollUp = new Set<string>()
+
   for (const change of changes) {
     const value = change.value || {}
     const statuses = value.statuses || []
@@ -74,42 +86,80 @@ export async function POST(request: NextRequest) {
       const timestamp = status.timestamp ? new Date(parseInt(status.timestamp) * 1000).toISOString() : new Date().toISOString()
       const errorMessage = status.errors?.[0]?.message || null
 
-      try {
-        // Read the current row first so we know the campaign and the existing status.
-        const { data: msg } = await sb.from('whatsapp_messages').select('campaign_id, status').eq('wa_message_id', waId).maybeSingle()
-        const cur = msg?.status
-
-        // Timestamps/errors are independent facts — always record them.
+      // Shared: build the field patch for whichever table holds this message.
+      const buildPatch = (cur: string | undefined) => {
         const updates: Record<string, any> = {}
         if (statusType === 'delivered') updates.delivered_at = timestamp
         if (statusType === 'read') updates.read_at = timestamp
         if (statusType === 'failed') updates.error_message = errorMessage
 
-        // BUG FIX: only move `status` FORWARD. WhatsApp status webhooks can arrive
-        // out of order (e.g. a late 'delivered' after 'read'); the old code set
-        // status unconditionally and would regress 'read' back to 'delivered'.
-        // 'failed' only applies before success (sent → failed), never over read/delivered.
+        // Only move `status` FORWARD. WhatsApp status webhooks can arrive out of
+        // order (e.g. a late 'delivered' after 'read'); setting status
+        // unconditionally would regress 'read' back to 'delivered'. 'failed'
+        // only applies before success (sent → failed), never over read/delivered.
         if (statusType === 'failed') {
           if (!cur || cur === 'sent') updates.status = 'failed'
         } else if (!cur || (STATUS_RANK[statusType] || 0) > (STATUS_RANK[cur] || 0)) {
           updates.status = statusType
         }
+        return updates
+      }
 
-        if (Object.keys(updates).length > 0) {
-          await sb.from('whatsapp_messages').update(updates).eq('wa_message_id', waId)
+      try {
+        // ── Campaign messages ────────────────────────────────────────────
+        const { data: msg } = await sb.from('whatsapp_messages')
+          .select('campaign_id, status').eq('wa_message_id', waId).maybeSingle()
+
+        if (msg) {
+          const updates = buildPatch(msg.status)
+          if (Object.keys(updates).length > 0) {
+            await sb.from('whatsapp_messages').update(updates).eq('wa_message_id', waId)
+          }
+          // Roll up once per batch on terminal statuses only.
+          if (msg.campaign_id && (statusType === 'delivered' || statusType === 'read')) {
+            campaignsToRollUp.add(msg.campaign_id)
+          }
+          continue
         }
 
-        // Roll up to campaign totals (count-based, so resilient to ordering).
-        if (msg?.campaign_id) {
-          // Count current totals
-          const [{ count: delivered }, { count: read }] = await Promise.all([
-            sb.from('whatsapp_messages').select('id', { count: 'exact', head: true }).eq('campaign_id', msg.campaign_id).in('status', ['delivered', 'read']),
-            sb.from('whatsapp_messages').select('id', { count: 'exact', head: true }).eq('campaign_id', msg.campaign_id).eq('status', 'read'),
-          ])
-          await sb.from('whatsapp_campaigns').update({ delivered: delivered || 0, read: read || 0, updated_at: new Date().toISOString() }).eq('id', msg.campaign_id)
+        // ── Cart-abandonment messages ────────────────────────────────────
+        const { data: cartMsg } = await sb.from('cart_messages')
+          .select('id, cart_id, status').eq('wa_message_id', waId).maybeSingle()
+
+        if (cartMsg) {
+          const updates = buildPatch(cartMsg.status)
+          if (Object.keys(updates).length > 0) {
+            // `delivered_at` / `read_at` may not exist on older cart_messages
+            // schemas — retry with just `status` + `error_message` so the
+            // status still lands instead of the whole update erroring out.
+            const { error } = await sb.from('cart_messages').update(updates).eq('id', cartMsg.id)
+            if (error) {
+              const minimal: Record<string, any> = {}
+              if (updates.status) minimal.status = updates.status
+              if (updates.error_message) minimal.error_message = updates.error_message
+              if (Object.keys(minimal).length) {
+                await sb.from('cart_messages').update(minimal).eq('id', cartMsg.id)
+              }
+            }
+          }
         }
-      } catch {}
+      } catch (e) {
+        console.error('[whatsapp webhook] status update failed', { waId, e: String(e) })
+      }
     }
+  }
+
+  // One roll-up per campaign per batch, not per status event.
+  for (const campaignId of campaignsToRollUp) {
+    try {
+      const [{ count: delivered }, { count: read }] = await Promise.all([
+        sb.from('whatsapp_messages').select('id', { count: 'exact', head: true }).eq('campaign_id', campaignId).in('status', ['delivered', 'read']),
+        sb.from('whatsapp_messages').select('id', { count: 'exact', head: true }).eq('campaign_id', campaignId).eq('status', 'read'),
+      ])
+      await sb.from('whatsapp_campaigns').update({
+        delivered: delivered || 0, read: read || 0, updated_at: new Date().toISOString(),
+      }).eq('id', campaignId)
+    } catch { /* roll-up is cosmetic; never fail the webhook */ }
   }
 
   return NextResponse.json({ ok: true })
