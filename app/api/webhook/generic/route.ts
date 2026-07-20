@@ -1,3 +1,13 @@
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/webhook/generic/route.ts                               │
+// │                                                                            │
+// │ Platform-neutral ORDER intake — this is the path NON-NATIVE Shopify        │
+// │ checkouts use (GoKwik, Shiprocket Checkout, Razorpay Magic, Simpl, custom  │
+// │ headless). Those checkouts never create a Shopify AbandonedCheckout, so    │
+// │ the matching abandoned-cart intake is /api/webhook/cart. Both are keyed by │
+// │ the same per-client webhook_secret and both accept an `external_id` /      │
+// │ `cart_id` so a purchase can be matched EXACTLY back to its cart.          │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
@@ -15,7 +25,7 @@ export async function POST(request: NextRequest) {
 
   // Verify secret
   const sb = getSupabaseAdmin()
-  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).single()
+  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).maybeSingle()
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
   const webhookSecret = request.headers.get('x-webhook-secret')
@@ -57,7 +67,7 @@ export async function POST(request: NextRequest) {
       .eq('redirect_slug', mkSlug)
       .eq('is_active', true)
       .eq('commission_trigger', 'per_lead')
-      .single()
+      .maybeSingle()
 
     if (affiliate) {
       await sb.from('events').insert({
@@ -92,14 +102,18 @@ export async function POST(request: NextRequest) {
   })
 
   // Cart abandonment: if this buyer had an open abandoned-cart sequence, stop it
-  // and credit the recovery to the message that was live. Pass phone/email on the
-  // order payload for this to match; a no-op otherwise. Best-effort.
+  // and credit the recovery to the message that was live.
+  //
+  // Pass `external_id` (or `cart_id`) — the SAME id you sent to
+  // /api/webhook/cart — for an exact match. Phone/email is the fallback, and
+  // can credit an unrelated older cart from a repeat buyer.
   await recoverCartsForOrder({
     clientId,
     phone: body.phone || body.customer_phone || null,
     email: body.email || body.customer_email || null,
     orderId: String(body.orderId),
     orderValue: body.orderValue || 0,
+    externalId: body.external_id || body.externalId || body.cart_id || body.cartId || null,
   })
 
   return NextResponse.json({
