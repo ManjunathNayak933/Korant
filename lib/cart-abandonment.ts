@@ -1,19 +1,35 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  lib/cart-abandonment.ts   (NEW FILE)                            │
-// │ Create at <repo-root>/lib/cart-abandonment.ts                              │
+// │ REPO PATH:  lib/cart-abandonment.ts                                        │
 // │                                                                            │
-// │ The engine behind the Cart Abandonment tab. Platform-neutral: it never     │
-// │ talks to Shopify directly. Adapters (Shopify checkout webhook, generic     │
+// │ The engine behind the Cart Abandonment tab. Platform-neutral: adapters    │
+// │ (Shopify checkout webhook, GraphQL abandonedCheckouts polling, generic     │
 // │ webhook, storefront snippet) all call intakeAbandonedCart() with the same  │
-// │ normalised shape. The daily cron calls runCartAbandonmentTick(). Order     │
+// │ normalised shape. The hourly cron calls runCartAbandonmentTick(). Order    │
 // │ webhooks call recoverCartsForOrder() to stop the sequence + attribute.     │
+// │                                                                            │
+// │ ALL SCHEDULING IS IST (Asia/Kolkata, UTC+05:30). IST has no DST, so the   │
+// │ wall-clock math is exact integer arithmetic — no Intl, nothing can throw. │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 import { getWAConfig, sendTemplateMessage } from './whatsapp'
+import { fetchShopifyAbandonedCheckouts } from './shopify'
+
+// ── Constants ───────────────────────────────────────────────────────────────
+export const IST_TIMEZONE = 'Asia/Kolkata'
+const IST_OFFSET_MS = 5.5 * 3600000       // UTC+05:30, fixed — India has no DST
+const DAY_MS = 86400000
+
+// Safety budgets for one cron invocation (Cloudflare caps subrequests per
+// invocation — 1,000 on paid plans). Each send costs ~4 subrequests, so 80
+// sends + per-client overhead stays comfortably under the cap. Anything left
+// over is picked up by the next hourly run (carts stay claimed-and-due).
+const MAX_SENDS_PER_RUN = 80
+const MAX_DUE_CARTS_PER_CLIENT = 200
+// A claimed cart that crashes mid-send self-heals after this lease expires.
+const CLAIM_LEASE_MS = 2 * 3600000
 
 // ── Phone normalisation ─────────────────────────────────────────────────────
-// Mirrors app/api/whatsapp/contacts: strip non-digits, default a bare 10-digit
-// number to India (+91). Returns '' if there aren't enough digits to be valid.
+// Strip non-digits, default a bare 10-digit number to India (+91).
 export function normalizePhone(raw: string | null | undefined): string {
   let p = String(raw || '').replace(/\D/g, '')
   if (!p) return ''
@@ -21,51 +37,53 @@ export function normalizePhone(raw: string | null | undefined): string {
   return p.length >= 10 ? p : ''
 }
 
-// ── Scheduling: next send instant at the brand's chosen wall-clock hour ──────
-// Given a base instant, add `delayDays`, then snap the time-of-day to `sendHour`
-// in `timezone`. If the resulting instant is not strictly after base (e.g. delay
-// 0 and the hour already passed today), roll to the next day. No date library —
-// uses Intl to resolve the timezone offset (two passes to stay correct across
-// DST for zones that have it; IST has none so it's exact).
-export function nextSendInstant(
-  baseIso: string, delayDays: number, sendHour: number, timezone: string
-): string {
-  const base = new Date(baseIso)
-  const target = new Date(base.getTime() + Math.max(0, delayDays) * 86400000)
+// ── Scheduling (IST only) ───────────────────────────────────────────────────
+// Add `delayDays` to the base instant, then snap to `sendHour` (0-23) on that
+// IST calendar day. If the result is not strictly after base (delay 0 and the
+// hour already passed today), roll to the next day. Pure arithmetic — correct
+// by construction for a fixed-offset zone, verified: 10 → 10:00 IST exactly.
+export function nextSendInstant(baseIso: string, delayDays: number, sendHour: number): string {
+  const base = new Date(baseIso).getTime()
+  const hour = Math.min(23, Math.max(0, Math.trunc(Number(sendHour)))) || 0
+  const target = base + Math.max(0, Number(delayDays) || 0) * DAY_MS
 
-  // Wall-clock Y-M-D of the target day, in the brand's timezone.
-  const ymd = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(target) // "YYYY-MM-DD"
-  const [y, m, d] = ymd.split('-').map(Number)
+  // Midnight (00:00 IST) of the target's IST calendar day, as a UTC instant.
+  const istDayStart = Math.floor((target + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS
+  let send = istDayStart + hour * 3600000
+  if (send <= base) send += DAY_MS
+  return new Date(send).toISOString()
+}
 
-  const instantForHour = (year: number, mon: number, day: number, hour: number): Date => {
-    let guess = Date.UTC(year, mon - 1, day, hour, 0, 0)
-    for (let i = 0; i < 2; i++) {
-      const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-      }).formatToParts(new Date(guess))
-      const map: Record<string, string> = {}
-      parts.forEach(p => { map[p.type] = p.value })
-      const asUTC = Date.UTC(+map.year, +map.month - 1, +map.day,
-        +map.hour === 24 ? 0 : +map.hour, +map.minute, +map.second)
-      const offset = asUTC - guess
-      guess = guess - offset
-    }
-    return new Date(guess)
+// ── Small helpers ───────────────────────────────────────────────────────────
+// Coerce to a finite number, treating 0 as a VALID value (plain `|| default`
+// silently turned delay 0 into 1 and send hour 0 into 10).
+export function numOr(v: unknown, def: number): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : def
+}
+
+// Drain a PostgREST query past the 1,000-row response cap. `build(from, to)`
+// must return a fresh query with `.range(from, to)` applied.
+async function pageAll<T = any>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>,
+  pageSize = 1000,
+  maxPages = 25
+): Promise<T[]> {
+  const out: T[] = []
+  for (let p = 0; p < maxPages; p++) {
+    const { data, error } = await build(p * pageSize, (p + 1) * pageSize - 1)
+    if (error || !data || data.length === 0) break
+    out.push(...data)
+    if (data.length < pageSize) break
   }
+  return out
+}
 
-  let send = instantForHour(y, m, d, sendHour)
-  if (send.getTime() <= base.getTime()) {
-    const next = new Date(target.getTime() + 86400000)
-    const ymd2 = new Intl.DateTimeFormat('en-CA', {
-      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(next)
-    const [y2, m2, d2] = ymd2.split('-').map(Number)
-    send = instantForHour(y2, m2, d2, sendHour)
-  }
-  return send.toISOString()
+// First enabled step of a client's sequence (ordered by step_no), or null.
+function firstEnabledStep(steps: any[]): any | null {
+  return (steps || [])
+    .filter(s => s.enabled !== false)
+    .sort((a, b) => (a.step_no || 0) - (b.step_no || 0))[0] || null
 }
 
 // ── Intake: store/refresh one abandoned cart from any source ─────────────────
@@ -94,18 +112,20 @@ export async function intakeAbandonedCart(
   // No phone → not messageable on WhatsApp. We don't store an unreachable cart.
   if (!phone) return { stored: false, reason: 'no_phone' }
 
-  // Load the sequence so we can (a) decide whether to schedule and (b) compute
-  // the first step's due time.
-  const { data: seq } = await sb
-    .from('cart_sequences').select('*').eq('client_id', input.clientId).maybeSingle()
-  const { data: step1 } = await sb
-    .from('cart_sequence_steps')
-    .select('delay_days, enabled').eq('client_id', input.clientId).eq('step_no', 1).maybeSingle()
+  // Load the sequence + steps so we can decide whether to schedule and compute
+  // the FIRST ENABLED step's due time (disabling message 1 no longer silently
+  // kills the whole sequence — we start from whichever step is enabled first).
+  const [{ data: seq }, { data: steps }] = await Promise.all([
+    sb.from('cart_sequences').select('*').eq('client_id', input.clientId).maybeSingle(),
+    sb.from('cart_sequence_steps').select('step_no, delay_days, enabled')
+      .eq('client_id', input.clientId).order('step_no', { ascending: true }),
+  ])
 
-  const canSchedule = !!(seq?.enabled && step1?.enabled && (input.optedIn ?? false))
+  const startStep = firstEnabledStep(steps || [])
+  const canSchedule = !!(seq?.enabled && startStep && (input.optedIn ?? false))
   const nowIso = new Date().toISOString()
   const nextStepAt = canSchedule
-    ? nextSendInstant(nowIso, step1!.delay_days ?? 1, seq!.send_hour ?? 10, seq!.timezone || 'Asia/Kolkata')
+    ? nextSendInstant(nowIso, numOr(startStep.delay_days, 1), numOr(seq!.send_hour, 10))
     : null
 
   const items = input.items || []
@@ -124,6 +144,8 @@ export async function intakeAbandonedCart(
     source: input.source || 'generic',
     external_id: input.externalId || null,
     status: 'open',
+    // Start the sequence at the first ENABLED step (step 1 may be disabled).
+    last_step_sent: startStep ? (startStep.step_no - 1) : 0,
     next_step_at: nextStepAt,
     abandoned_at: nowIso,
     updated_at: nowIso,
@@ -136,19 +158,22 @@ export async function intakeAbandonedCart(
   if (input.externalId) {
     const { data: existing } = await sb
       .from('abandoned_carts')
-      .select('id, last_step_sent, status')
+      .select('id, last_step_sent, status, recovery_url')
       .eq('client_id', input.clientId).eq('external_id', input.externalId).maybeSingle()
 
     if (existing) {
       if (existing.status !== 'open') return { stored: true, cartId: existing.id, scheduled: false }
       const patch: Record<string, any> = {
         cart_value: row.cart_value, currency: row.currency, item_count: row.item_count,
-        cart_items: row.cart_items, recovery_url: row.recovery_url,
+        cart_items: row.cart_items,
+        recovery_url: row.recovery_url || existing.recovery_url,
         phone, email, contact_name: row.contact_name, opted_in: row.opted_in,
         updated_at: nowIso,
       }
-      // Only (re)schedule if it hasn't sent anything yet.
-      if ((existing.last_step_sent ?? 0) === 0) patch.next_step_at = nextStepAt
+      // Only (re)schedule if nothing has been sent yet — and ONLY when the new
+      // schedule is non-null. A later webhook that momentarily lacks consent
+      // fields must not un-schedule an already-scheduled cart.
+      if ((existing.last_step_sent ?? 0) === 0 && nextStepAt) patch.next_step_at = nextStepAt
       await sb.from('abandoned_carts').update(patch).eq('id', existing.id)
       return { stored: true, cartId: existing.id, scheduled: !!nextStepAt }
     }
@@ -161,42 +186,68 @@ export async function intakeAbandonedCart(
 }
 
 // ── Recovery: a purchase arrived — stop the sequence + attribute the sale ─────
-// Called from order webhooks (Shopify orders/paid, generic order webhook, etc.).
-// Matches by phone or email against this client's OPEN carts within the expiry
-// window, credits the most recent match, and stops every other open cart for the
-// same buyer so we don't keep messaging someone who already bought.
+// Called from order webhooks (Shopify orders/paid, generic, Razorpay). Matches
+// FIRST by the checkout's own external id (exact — Shopify orders carry
+// checkout_token, which is what intake stored), then by phone/email against
+// this client's OPEN carts within the expiry window. Phone/email matching runs
+// as separate parameterised queries — no string-built OR filter, so a crafted
+// email can no longer inject PostgREST filter syntax.
 export async function recoverCartsForOrder(input: {
   clientId: string
   phone?: string | null
   email?: string | null
   orderId: string
   orderValue: number
+  externalId?: string | null   // e.g. Shopify order.checkout_token
 }): Promise<{ recovered: number; step?: number | null }> {
   const sb = getSupabaseAdmin()
   const phone = normalizePhone(input.phone)
   const email = (input.email || '').trim().toLowerCase() || null
-  if (!phone && !email) return { recovered: 0 }
+  const externalId = (input.externalId || '').trim() || null
+  if (!phone && !email && !externalId) return { recovered: 0 }
 
   const { data: seq } = await sb
     .from('cart_sequences').select('expiry_days').eq('client_id', input.clientId).maybeSingle()
-  const windowStart = new Date(Date.now() - (seq?.expiry_days ?? 14) * 86400000).toISOString()
+  const windowStart = new Date(Date.now() - (numOr(seq?.expiry_days, 14)) * DAY_MS).toISOString()
 
-  // Build an OR filter across phone/email.
-  let q = sb.from('abandoned_carts')
-    .select('id, last_step_sent, abandoned_at')
-    .eq('client_id', input.clientId).eq('status', 'open')
-    .gte('abandoned_at', windowStart)
-    .order('abandoned_at', { ascending: false })
+  type CartRow = { id: string; last_step_sent: number | null; abandoned_at: string }
+  const byId = new Map<string, CartRow>()
+  let exactMatch: CartRow | null = null
 
-  const ors: string[] = []
-  if (phone) ors.push(`phone.eq.${phone}`)
-  if (email) ors.push(`email.eq.${email}`)
-  q = q.or(ors.join(','))
+  // 1) Exact match on the checkout's own id (no time window — it IS this cart).
+  if (externalId) {
+    const { data } = await sb.from('abandoned_carts')
+      .select('id, last_step_sent, abandoned_at')
+      .eq('client_id', input.clientId).eq('status', 'open').eq('external_id', externalId)
+      .limit(1)
+    if (data?.[0]) { exactMatch = data[0]; byId.set(data[0].id, data[0]) }
+  }
 
-  const { data: carts } = await q
-  if (!carts?.length) return { recovered: 0 }
+  // 2) Same-buyer matches by phone and by email (separate safe queries).
+  const buyerQueries: PromiseLike<{ data: CartRow[] | null; error: any }>[] = []
+  if (phone) {
+    buyerQueries.push(sb.from('abandoned_carts')
+      .select('id, last_step_sent, abandoned_at')
+      .eq('client_id', input.clientId).eq('status', 'open').eq('phone', phone)
+      .gte('abandoned_at', windowStart).order('abandoned_at', { ascending: false }).limit(50))
+  }
+  if (email) {
+    buyerQueries.push(sb.from('abandoned_carts')
+      .select('id, last_step_sent, abandoned_at')
+      .eq('client_id', input.clientId).eq('status', 'open').eq('email', email)
+      .gte('abandoned_at', windowStart).order('abandoned_at', { ascending: false }).limit(50))
+  }
+  for (const q of buyerQueries) {
+    const { data } = await q
+    for (const c of data || []) if (!byId.has(c.id)) byId.set(c.id, c)
+  }
 
-  const primary = carts[0]
+  if (byId.size === 0) return { recovered: 0 }
+
+  // Credit the exact checkout when we have it, else the most recent match.
+  const all = Array.from(byId.values())
+    .sort((a, b) => new Date(b.abandoned_at).getTime() - new Date(a.abandoned_at).getTime())
+  const primary = exactMatch || all[0]
   const step = primary.last_step_sent ?? 0
   const nowIso = new Date().toISOString()
 
@@ -206,141 +257,250 @@ export async function recoverCartsForOrder(input: {
     recovered_order_id: input.orderId,
     recovered_value: input.orderValue || 0,
     recovered_by_step: step,           // 0 = recovered before any message went out
+    next_step_at: null,
     updated_at: nowIso,
   }).eq('id', primary.id)
 
-  // Stop any other open carts for the same buyer (no double revenue credit).
-  const others = carts.slice(1).map(c => c.id)
+  // Stop the buyer's OTHER open carts. Prefer a distinct 'superseded' status so
+  // "stopped because they bought" isn't conflated with "sequence finished"; if
+  // the DB constrains status values and rejects it, fall back to 'completed'.
+  const others = all.filter(c => c.id !== primary.id).map(c => c.id)
   if (others.length) {
-    await sb.from('abandoned_carts').update({ status: 'completed', updated_at: nowIso }).in('id', others)
-  }
-
-  return { recovered: carts.length, step }
-}
-
-// ── The daily tick: send whichever step is now due for each open cart ─────────
-export async function runCartAbandonmentTick(
-  nowIso = new Date().toISOString()
-): Promise<{ processed: number; sent: number; failed: number; expired: number }> {
-  const sb = getSupabaseAdmin()
-  let processed = 0, sent = 0, failed = 0, expired = 0
-
-  // Only clients with an enabled sequence are in play.
-  const { data: seqs } = await sb.from('cart_sequences').select('*').eq('enabled', true)
-  if (!seqs?.length) return { processed, sent, failed, expired }
-
-  for (const seq of seqs) {
-    const clientId = seq.client_id
-
-    // 1) Expire stale open carts for this client (stop chasing dead carts).
-    const expiryStart = new Date(Date.now() - (seq.expiry_days ?? 14) * 86400000).toISOString()
-    const { data: expiredRows } = await sb.from('abandoned_carts')
-      .update({ status: 'expired', updated_at: nowIso })
-      .eq('client_id', clientId).eq('status', 'open').lt('abandoned_at', expiryStart)
-      .select('id')
-    expired += expiredRows?.length || 0
-
-    // 2) WhatsApp must be connected to send anything.
-    const config = await getWAConfig(clientId)
-    if (!config) continue
-
-    // 3) Load this client's steps once.
-    const { data: steps } = await sb.from('cart_sequence_steps')
-      .select('*').eq('client_id', clientId).order('step_no', { ascending: true })
-    const stepByNo: Record<number, any> = {}
-    ;(steps || []).forEach(s => { stepByNo[s.step_no] = s })
-
-    // 4) Templates must be APPROVED to send. Cache per client.
-    const { data: tmpls } = await sb.from('whatsapp_templates')
-      .select('template_name, status, variable_count, language').eq('client_id', clientId)
-    const tmplByName: Record<string, any> = {}
-    ;(tmpls || []).forEach(t => { tmplByName[t.template_name] = t })
-
-    // 5) Find due carts (opted-in, open, next step in the past, not finished).
-    const { data: dueCarts } = await sb.from('abandoned_carts')
-      .select('*')
-      .eq('client_id', clientId).eq('status', 'open').eq('opted_in', true)
-      .lt('last_step_sent', 3)
-      .not('next_step_at', 'is', null)
-      .lte('next_step_at', nowIso)
-      .order('next_step_at', { ascending: true })
-      .limit(500)
-
-    for (const cart of dueCarts || []) {
-      processed++
-      const stepNo = (cart.last_step_sent ?? 0) + 1
-      const step = stepByNo[stepNo]
-      const tmpl = step ? tmplByName[step.template_name] : null
-
-      // Step disabled / missing / template not approved → skip forward so the
-      // sequence doesn't stall on a broken step; try the next step next run.
-      if (!step || !step.enabled || !tmpl || tmpl.status !== 'APPROVED') {
-        const nextStep = stepByNo[stepNo + 1]
-        const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
-        patch.next_step_at = (stepNo < 3 && nextStep?.enabled)
-          ? nextSendInstant(nowIso, nextStep.delay_days ?? 1, seq.send_hour ?? 10, seq.timezone || 'Asia/Kolkata')
-          : null
-        if (!patch.next_step_at) patch.status = 'completed'
-        await sb.from('abandoned_carts').update(patch).eq('id', cart.id)
-        continue
-      }
-
-      // Build positional variables from the step's variable_map, exactly like the
-      // campaign sender. __link__ uses THIS step's tracking slug in the body; the
-      // URL button gets the raw slug (base/{{1}} is built at template level).
-      const trackingLink = `${process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL}/r/${step.tracking_slug}`
-      const varMap = step.variable_map || {}
-      const variables: string[] = []
-      for (let v = 1; v <= (tmpl.variable_count || 0); v++) {
-        const key = varMap[`{{${v}}}`] || varMap[String(v)]
-        if (key === '__name__') variables.push(cart.contact_name || 'there')
-        else if (key === '__link__') variables.push(trackingLink)
-        else if (key === '__code__') variables.push(step.coupon_code || '')
-        else variables.push(key || '')
-      }
-
-      const result = await sendTemplateMessage(config, {
-        to: cart.phone,
-        templateName: step.template_name,
-        language: step.language || tmpl.language || 'en',
-        variables,
-        trackingUrl: step.tracking_slug,
-      })
-
-      if ('error' in result) {
-        failed++
-        await sb.from('cart_messages').insert({
-          cart_id: cart.id, client_id: clientId, step_no: stepNo,
-          phone: cart.phone, status: 'failed', error_message: result.error,
-        })
-        // Retry this same step on the next daily run rather than skipping it.
-        await sb.from('abandoned_carts').update({
-          next_step_at: nextSendInstant(nowIso, 1, seq.send_hour ?? 10, seq.timezone || 'Asia/Kolkata'),
-          updated_at: nowIso,
-        }).eq('id', cart.id)
-        continue
-      }
-
-      sent++
-      await sb.from('cart_messages').insert({
-        cart_id: cart.id, client_id: clientId, step_no: stepNo,
-        wa_message_id: result.wa_message_id, phone: cart.phone, status: 'sent',
-      })
-
-      // Advance: schedule the next step, or complete the sequence after step 3.
-      const nextStep = stepByNo[stepNo + 1]
-      const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
-      if (stepNo < 3 && nextStep?.enabled) {
-        patch.next_step_at = nextSendInstant(nowIso, nextStep.delay_days ?? 1, seq.send_hour ?? 10, seq.timezone || 'Asia/Kolkata')
-      } else {
-        patch.next_step_at = null
-        patch.status = 'completed'
-      }
-      await sb.from('abandoned_carts').update(patch).eq('id', cart.id)
+    const { error: supErr } = await sb.from('abandoned_carts')
+      .update({ status: 'superseded', next_step_at: null, updated_at: nowIso }).in('id', others)
+    if (supErr) {
+      await sb.from('abandoned_carts')
+        .update({ status: 'completed', next_step_at: null, updated_at: nowIso }).in('id', others)
     }
   }
 
-  return { processed, sent, failed, expired }
+  return { recovered: 1, step }
+}
+
+// ── Shopify polling fallback ─────────────────────────────────────────────────
+// Belt-and-braces alongside the CHECKOUTS_CREATE/UPDATE webhooks: the GraphQL
+// Admin `abandonedCheckouts` query (2026-07) returns every checkout where the
+// shopper entered contact details but didn't pay — including stores on Checkout
+// Extensibility where webhook delivery has historically been patchy. Fully
+// external checkouts (GoKwik-style) never reach Shopify at all; those use the
+// platform-neutral /api/webhook/cart endpoint instead.
+async function pollShopifyAbandonedCarts(clientId: string): Promise<number> {
+  const sinceIso = new Date(Date.now() - DAY_MS).toISOString() // last 24h
+  const checkouts = await fetchShopifyAbandonedCheckouts(clientId, sinceIso)
+  let stored = 0
+  for (const c of checkouts) {
+    const r = await intakeAbandonedCart({
+      clientId,
+      phone: c.phone,
+      email: c.email,
+      name: c.name,
+      optedIn: c.optedIn,
+      identitySource: 'checkout',
+      cartValue: c.totalPrice,
+      currency: c.currency,
+      items: c.items,
+      recoveryUrl: c.recoveryUrl,
+      source: 'shopify',
+      externalId: c.externalId,
+    })
+    if (r.stored) stored++
+  }
+  return stored
+}
+
+// ── The hourly tick: send whichever step is now due for each open cart ────────
+export async function runCartAbandonmentTick(
+  nowIso = new Date().toISOString()
+): Promise<{ processed: number; sent: number; failed: number; expired: number; held: number; capped: boolean }> {
+  const sb = getSupabaseAdmin()
+  const nowMs = new Date(nowIso).getTime()
+  let processed = 0, sent = 0, failed = 0, expired = 0, held = 0
+  let capped = false
+  let sendBudget = MAX_SENDS_PER_RUN
+
+  // Only clients with an enabled sequence are in play (paginated — the 1,000
+  // row PostgREST cap must not silently drop clients past it).
+  const seqs = await pageAll<any>((from, to) =>
+    sb.from('cart_sequences').select('*').eq('enabled', true).range(from, to))
+  if (!seqs.length) return { processed, sent, failed, expired, held, capped }
+
+  // Paused / suspended clients must not keep messaging customers (or accruing
+  // Meta charges). Fetch statuses in chunks and skip anything not active.
+  const statusById: Record<string, string> = {}
+  const ids = seqs.map(s => s.client_id)
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data } = await sb.from('clients').select('id, status').in('id', ids.slice(i, i + 200))
+    for (const c of data || []) statusById[c.id] = c.status
+  }
+
+  const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || ''
+
+  for (const seq of seqs) {
+    if (sendBudget <= 0) { capped = true; break }
+    const clientId = seq.client_id
+    const clientStatus = statusById[clientId]
+    if (clientStatus && clientStatus !== 'active') continue
+
+    // One misconfigured client must never take down the whole run.
+    try {
+      const sendHour = numOr(seq.send_hour, 10)
+
+      // 1) Expire stale open carts for this client (stop chasing dead carts).
+      const expiryStart = new Date(nowMs - numOr(seq.expiry_days, 14) * DAY_MS).toISOString()
+      const { data: expiredRows } = await sb.from('abandoned_carts')
+        .update({ status: 'expired', next_step_at: null, updated_at: nowIso })
+        .eq('client_id', clientId).eq('status', 'open').lt('abandoned_at', expiryStart)
+        .select('id')
+      expired += expiredRows?.length || 0
+
+      // 2) Best-effort Shopify polling fallback (see note above).
+      try { await pollShopifyAbandonedCarts(clientId) } catch (e) {
+        console.error('[cart tick] shopify poll failed', { clientId, e: String(e) })
+      }
+
+      // 3) WhatsApp must be connected to send anything.
+      const config = await getWAConfig(clientId)
+      if (!config) continue
+
+      // 4) Load this client's steps once.
+      const { data: steps } = await sb.from('cart_sequence_steps')
+        .select('*').eq('client_id', clientId).order('step_no', { ascending: true })
+      const stepByNo: Record<number, any> = {}
+      ;(steps || []).forEach(s => { stepByNo[s.step_no] = s })
+
+      // 5) Templates. Keyed by name|language so the same template name in two
+      //    languages can't collide (last-write-wins previously picked at random).
+      const { data: tmpls } = await sb.from('whatsapp_templates')
+        .select('template_name, status, variable_count, language, has_buttons').eq('client_id', clientId)
+      const tmplByKey: Record<string, any> = {}
+      const tmplByName: Record<string, any> = {}
+      ;(tmpls || []).forEach(t => {
+        tmplByKey[`${t.template_name}|${t.language}`] = t
+        if (!tmplByName[t.template_name] || t.status === 'APPROVED') tmplByName[t.template_name] = t
+      })
+
+      // 6) Find due carts (opted-in, open, next step in the past, not finished).
+      const { data: dueCarts } = await sb.from('abandoned_carts')
+        .select('*')
+        .eq('client_id', clientId).eq('status', 'open').eq('opted_in', true)
+        .lt('last_step_sent', 3)
+        .not('next_step_at', 'is', null)
+        .lte('next_step_at', nowIso)
+        .order('next_step_at', { ascending: true })
+        .limit(MAX_DUE_CARTS_PER_CLIENT)
+
+      for (const cart of dueCarts || []) {
+        if (sendBudget <= 0) { capped = true; break }
+        processed++
+
+        // CLAIM the cart before sending: a conditional update that only matches
+        // if next_step_at is still what we read. Two overlapping runs can't both
+        // pass this, so a cart can never be double-sent. The claim moves
+        // next_step_at forward by a short lease instead of nulling it — if this
+        // worker dies mid-send, the cart becomes due again after the lease.
+        const lease = new Date(nowMs + CLAIM_LEASE_MS).toISOString()
+        const { data: claimed } = await sb.from('abandoned_carts')
+          .update({ next_step_at: lease, updated_at: nowIso })
+          .eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
+          .select('id')
+        if (!claimed || claimed.length === 0) continue // another run has it
+
+        const stepNo = (cart.last_step_sent ?? 0) + 1
+        const step = stepByNo[stepNo]
+
+        // Step permanently missing or explicitly disabled → skip forward so the
+        // sequence doesn't stall; try the next step on its own schedule.
+        if (!step || step.enabled === false) {
+          const nextStep = stepByNo[stepNo + 1]
+          const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
+          patch.next_step_at = (stepNo < 3 && nextStep && nextStep.enabled !== false)
+            ? nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour)
+            : null
+          if (!patch.next_step_at) patch.status = 'completed'
+          await sb.from('abandoned_carts').update(patch).eq('id', cart.id)
+          continue
+        }
+
+        // Template not APPROVED yet → HOLD, don't burn the step. Meta approval
+        // is usually a matter of hours; treating "pending" as "broken" used to
+        // walk carts through steps 1→3 with zero messages and zero logging.
+        // The cart retries at the next send hour; expiry_days caps how long.
+        const tmpl = tmplByKey[`${step.template_name}|${step.language || 'en'}`]
+          || tmplByName[step.template_name]
+        if (!tmpl || tmpl.status !== 'APPROVED') {
+          held++
+          await sb.from('abandoned_carts').update({
+            next_step_at: nextSendInstant(nowIso, 1, sendHour),
+            updated_at: nowIso,
+          }).eq('id', cart.id)
+          continue
+        }
+
+        // Build the PER-CART tracking slug: `<step slug>.<cart id>`. The /r/
+        // redirect splits on the first dot, resolves the step, and sends the
+        // shopper to THEIR OWN cart's recovery_url (Shopify checkout resume),
+        // via the /discount session URL when the step carries a coupon.
+        const cartSlug = `${step.tracking_slug}.${cart.id}`
+        const trackingLink = `${base}/r/${cartSlug}`
+        const varMap = step.variable_map || {}
+        const variables: string[] = []
+        for (let v = 1; v <= (tmpl.variable_count || 0); v++) {
+          const key = varMap[`{{${v}}}`] || varMap[String(v)]
+          if (key === '__name__') variables.push(cart.contact_name || 'there')
+          else if (key === '__link__') variables.push(trackingLink)
+          else if (key === '__code__') variables.push(step.coupon_code || '')
+          else variables.push(key || '')
+        }
+
+        sendBudget--
+        const result = await sendTemplateMessage(config, {
+          to: cart.phone,
+          templateName: step.template_name,
+          language: step.language || tmpl.language || 'en',
+          variables,
+          trackingUrl: cartSlug,
+          // Only attach a URL-button component when the template actually HAS
+          // buttons — Meta rejects the send outright otherwise.
+          hasButtons: !!tmpl.has_buttons,
+        })
+
+        if ('error' in result) {
+          failed++
+          await sb.from('cart_messages').insert({
+            cart_id: cart.id, client_id: clientId, step_no: stepNo,
+            phone: cart.phone, status: 'failed', error_message: result.error,
+          })
+          // Retry this same step at the next send hour rather than skipping it.
+          await sb.from('abandoned_carts').update({
+            next_step_at: nextSendInstant(nowIso, 1, sendHour),
+            updated_at: nowIso,
+          }).eq('id', cart.id)
+          continue
+        }
+
+        sent++
+        await sb.from('cart_messages').insert({
+          cart_id: cart.id, client_id: clientId, step_no: stepNo,
+          wa_message_id: result.wa_message_id, phone: cart.phone, status: 'sent',
+        })
+
+        // Advance: schedule the next enabled step, or complete after step 3.
+        const nextStep = stepByNo[stepNo + 1]
+        const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
+        if (stepNo < 3 && nextStep && nextStep.enabled !== false) {
+          patch.next_step_at = nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour)
+        } else {
+          patch.next_step_at = null
+          patch.status = 'completed'
+        }
+        await sb.from('abandoned_carts').update(patch).eq('id', cart.id)
+      }
+    } catch (e) {
+      console.error('[cart tick] client failed', { clientId, e: String(e) })
+    }
+  }
+
+  return { processed, sent, failed, expired, held, capped }
 }
 
 // ── KPIs: the funnel + total revenue generated by this activity ──────────────
@@ -363,25 +523,26 @@ export interface CartStats {
 }
 
 // month = 'YYYY-MM' (optional). Buckets by abandoned_at in IST, matching the
-// dashboard's month windowing.
+// dashboard's month windowing. Paginated — the previous unbounded select
+// silently froze every KPI at PostgREST's 1,000-row cap.
 export async function getCartAbandonmentStats(clientId: string, month?: string): Promise<CartStats> {
   const sb = getSupabaseAdmin()
 
   let start: string | null = null, end: string | null = null
-  if (month) {
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
     const [my, mm] = month.split('-').map(Number)
     const nextMonth = new Date(Date.UTC(my, mm, 1)).toISOString().slice(0, 10)
     start = new Date(`${month}-01T00:00:00+05:30`).toISOString()
     end = new Date(`${nextMonth}T00:00:00+05:30`).toISOString()
   }
 
-  const cartQ = () => {
-    let q = sb.from('abandoned_carts').select('*').eq('client_id', clientId)
+  const rows = await pageAll<any>((from, to) => {
+    let q = sb.from('abandoned_carts')
+      .select('status, opted_in, recovered_by_step, recovered_value')
+      .eq('client_id', clientId).order('abandoned_at', { ascending: true }).range(from, to)
     if (start && end) q = q.gte('abandoned_at', start).lt('abandoned_at', end)
     return q
-  }
-  const { data: carts } = await cartQ()
-  const rows = carts || []
+  })
 
   const detected = rows.length
   const messageable = rows.filter(r => r.opted_in).length
@@ -395,13 +556,16 @@ export async function getCartAbandonmentStats(clientId: string, month?: string):
     .filter(r => (r.recovered_by_step ?? 0) === 0)
     .reduce((s, r) => s + (Number(r.recovered_value) || 0), 0)
 
-  // Per-step "sent" comes from the message log (accurate even after a cart moves
-  // on); "recovered"/"revenue" come from recovered_by_step on the cart.
-  let mq = sb.from('cart_messages').select('step_no, status, created_at').eq('client_id', clientId)
-  if (start && end) mq = mq.gte('created_at', start).lt('created_at', end)
-  const { data: msgs } = await mq
+  // Per-step "sent" from the message log (accurate even after a cart moves on);
+  // "recovered"/"revenue" from recovered_by_step on the cart. Also paginated.
+  const msgs = await pageAll<any>((from, to) => {
+    let q = sb.from('cart_messages').select('step_no, status')
+      .eq('client_id', clientId).order('created_at', { ascending: true }).range(from, to)
+    if (start && end) q = q.gte('created_at', start).lt('created_at', end)
+    return q
+  })
   const sentByStep: Record<number, number> = { 1: 0, 2: 0, 3: 0 }
-  ;(msgs || []).forEach(m => {
+  msgs.forEach(m => {
     if (m.status !== 'failed') sentByStep[m.step_no] = (sentByStep[m.step_no] || 0) + 1
   })
 
