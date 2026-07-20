@@ -2,15 +2,25 @@
 const nextConfig = {
   serverExternalPackages: [],
 
-  // The app pulls in @cloudflare/workers-types, which types Response.json()
-  // as Promise<unknown> (the DOM lib types it as any). That turns every
-  // `await fetch(...).json()` + property access (me.role, etc.) into a
-  // type error — ~47 files. These are type-only false positives: the data
-  // really has those fields at runtime. Don't fail the production build on them.
+  // TypeScript is ON again.
+  //
+  // It used to be disabled because @cloudflare/workers-types types
+  // Response.json() as Promise<unknown>, which produced ~350 "Property 'x'
+  // does not exist on type 'unknown'" errors across ~47 files. Those really
+  // were false positives — but switching the compiler off to hide them also
+  // hid genuine bugs in the same pile (lib/links.ts was returning an object
+  // missing two required properties, which silently disabled the Shopify
+  // /discount session redirect).
+  //
+  // types/fetch-json.d.ts restores the correct `Promise<any>` typing in one
+  // line, taking the project to zero errors, so the build can fail loudly
+  // again. If you hit a genuine type error, fix it rather than re-enabling
+  // these flags.
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
   eslint: {
+    // Lint separately (`npx next lint`) — kept out of the build for speed.
     ignoreDuringBuilds: true,
   },
 
