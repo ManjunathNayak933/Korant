@@ -113,6 +113,53 @@ export async function checkRateLimit(key: string): Promise<boolean> {
   return true
 }
 
+// Per-ACCOUNT limiter for login. IP-only limiting doesn't stop a distributed
+// password-spray against one mailbox: every request comes from a different
+// address, so each one sees a fresh counter. Keyed on the email (hashed, so
+// addresses never sit in KV in the clear) with a tighter budget than the IP
+// limiter, because a real person doesn't need 10 tries at one account.
+const ACCOUNT_LIMIT_MAX = 5
+
+async function hashKey(value: string): Promise<string> {
+  const bits = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(bits)).slice(0, 12)
+    .map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+export async function checkAccountRateLimit(email: string): Promise<boolean> {
+  const now = Date.now()
+  const key = `rl:acct:${await hashKey(email.trim().toLowerCase())}`
+  const kv = getRateLimitKV()
+
+  if (kv) {
+    try {
+      const raw = await kv.get(key)
+      const entry = raw ? JSON.parse(raw) as { count: number; resetAt: number } : null
+      if (!entry || now > entry.resetAt) {
+        await kv.put(key, JSON.stringify({ count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS }),
+          { expirationTtl: Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) })
+        return true
+      }
+      if (entry.count >= ACCOUNT_LIMIT_MAX) return false
+      entry.count++
+      await kv.put(key, JSON.stringify(entry),
+        { expirationTtl: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) })
+      return true
+    } catch {
+      return true // KV hiccup — fail open rather than lock the account out
+    }
+  }
+
+  const entry = rateLimitMap.get(key)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+    return true
+  }
+  if (entry.count >= ACCOUNT_LIMIT_MAX) return false
+  entry.count++
+  return true
+}
+
 // ── JWT ───────────────────────────────────────────────────────────────────────
 export async function signToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): Promise<string> {
   return new SignJWT({ ...payload })
@@ -136,8 +183,10 @@ export function buildAuthCookie(token: string): string {
   return `${COOKIE_NAME}=${token}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax; Secure`
 }
 
+// `Secure` must match the cookie that was SET, or some browsers refuse to
+// overwrite it and the session cookie survives logout on the client side.
 export function buildClearCookie(): string {
-  return `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
+  return `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax; Secure`
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -146,18 +195,32 @@ export async function loginUser(
   password: string
 ): Promise<{ token: string; role: UserRole; redirectPath: string; name: string } | null> {
 
-  // 1. Admin — compare against hashed password stored in ADMIN_PASSWORD_HASH env var.
-  // To generate the hash, run once: POST /api/setup/verify with your chosen password,
-  // or use the hashPassword() function from a one-off script.
-  // Falls back to ADMIN_PASSWORD plain-text ONLY during initial setup (no hash set yet).
+  // 1. Admin — compare against the PBKDF2 hash in ADMIN_PASSWORD_HASH.
+  // Generate it with: node -e "..." using hashPassword(), or any PBKDF2-SHA256
+  // (100k iterations) tool producing `pbkdf2:<saltHex>:<hashHex>`.
+  //
+  // The plain-text ADMIN_PASSWORD fallback is now DEV-ONLY. It previously
+  // worked in production, where it compared the submitted password to an env
+  // var with `===` — no hashing, not constant-time, and it made the admin
+  // account (which can read every tenant's data) only as safe as an env var
+  // pasted into a dashboard. In production, no hash means no admin login.
   if (email === process.env.ADMIN_EMAIL) {
     const adminHash = process.env.ADMIN_PASSWORD_HASH
     let adminMatch = false
     if (adminHash) {
       adminMatch = await verifyPasswordCrypto(password, adminHash)
+    } else if (process.env.ADMIN_PASSWORD && process.env.NODE_ENV !== 'production') {
+      // Local/dev bootstrap only. Constant-time compare so the dev path doesn't
+      // teach the wrong pattern.
+      const a = password, b = process.env.ADMIN_PASSWORD
+      let r = a.length === b.length ? 0 : 1
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        r |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0)
+      }
+      adminMatch = r === 0
     } else if (process.env.ADMIN_PASSWORD) {
-      // Legacy fallback — set ADMIN_PASSWORD_HASH as soon as possible and remove ADMIN_PASSWORD
-      adminMatch = password === process.env.ADMIN_PASSWORD
+      console.error('[auth] ADMIN_PASSWORD is set but ADMIN_PASSWORD_HASH is not. ' +
+        'Plain-text admin login is disabled in production — set ADMIN_PASSWORD_HASH.')
     }
     if (adminMatch) {
       const token = await signToken({ sub: 'admin', role: 'admin', email, name: 'Admin' })
@@ -264,6 +327,8 @@ export async function verifyOAuthState(
   }
 }
 
+// Same reasoning as buildClearCookie: attributes must match the Set-Cookie
+// that created it (signOAuthState sets Secure) for the clear to take effect.
 export function buildClearOAuthStateCookie(): string {
-  return `${OAUTH_STATE_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`
+  return `${OAUTH_STATE_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax; Secure`
 }
