@@ -1,8 +1,17 @@
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/webhook/razorpay/route.ts                              │
+// │                                                                            │
+// │ BUG FIX: this handler never called recoverCartsForOrder(), unlike the      │
+// │ Shopify and generic order webhooks. Razorpay brands therefore kept         │
+// │ messaging customers who had already paid, and none of that recovered       │
+// │ revenue was ever credited to the cart-abandonment activity.                │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
+import { recoverCartsForOrder } from '@/lib/cart-abandonment'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -12,7 +21,7 @@ export async function POST(request: NextRequest) {
   const body = await request.text()
   const sb = getSupabaseAdmin()
 
-  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).single()
+  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).maybeSingle()
   if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
   // Verify Razorpay's real signature: HMAC-SHA256(rawBody, webhook_secret) as hex,
@@ -62,6 +71,19 @@ export async function POST(request: NextRequest) {
     mkSlug: notes.mk_slug || undefined,
     mkSlugFirst: notes.mk_slug_first || undefined,
     platform: 'razorpay',
+  })
+
+  // Cart abandonment: stop the sequence and credit the recovery. Razorpay
+  // exposes the buyer's contact on the payment entity; pass `cart_id` /
+  // `external_id` in the order `notes` for an exact cart match (that's the same
+  // id you sent to /api/webhook/cart from a non-native checkout).
+  await recoverCartsForOrder({
+    clientId,
+    phone: payment.contact || notes.phone || null,
+    email: payment.email || notes.email || null,
+    orderId: String(payment.id),
+    orderValue: (payment.amount || 0) / 100,
+    externalId: notes.cart_id || notes.external_id || null,
   })
 
   return NextResponse.json({ received: true, attributed: result.attributed })
