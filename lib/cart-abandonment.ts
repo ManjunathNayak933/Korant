@@ -11,7 +11,7 @@
 // │ wall-clock math is exact integer arithmetic — no Intl, nothing can throw. │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
-import { getWAConfig, sendTemplateMessage } from './whatsapp'
+import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from './whatsapp'
 import { fetchShopifyAbandonedCheckouts } from './shopify'
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -58,6 +58,10 @@ export function nextSendInstant(baseIso: string, delayDays: number, sendHour: nu
 // Coerce to a finite number, treating 0 as a VALID value (plain `|| default`
 // silently turned delay 0 into 1 and send hour 0 into 10).
 export function numOr(v: unknown, def: number): number {
+  // Number(null) === 0 and Number('') === 0, both finite — so a NULL/empty
+  // column silently became 0. For expiry_days that meant `now - 0 days`, i.e.
+  // EVERY open cart expired on the next tick. Reject the empties first.
+  if (v === null || v === undefined || v === '') return def
   const n = Number(v)
   return Number.isFinite(n) ? n : def
 }
@@ -210,15 +214,26 @@ export async function recoverCartsForOrder(input: {
     .from('cart_sequences').select('expiry_days').eq('client_id', input.clientId).maybeSingle()
   const windowStart = new Date(Date.now() - (numOr(seq?.expiry_days, 14)) * DAY_MS).toISOString()
 
-  type CartRow = { id: string; last_step_sent: number | null; abandoned_at: string }
+  type CartRow = {
+    id: string; last_step_sent: number | null; abandoned_at: string; status: string
+  }
   const byId = new Map<string, CartRow>()
   let exactMatch: CartRow | null = null
+
+  // A cart whose sequence has finished is marked 'completed' — including the
+  // instant after message 1 on a single-message sequence. Matching only 'open'
+  // meant a purchase driven by the LAST message was never credited: the headline
+  // "revenue recovered by this activity" sat at zero by construction, and
+  // recovered_by_step could never reach the final step. Finished carts are the
+  // ones most likely to convert, so they must stay matchable. 'expired' stays
+  // out — past expiry_days we no longer claim the sale.
+  const RECOVERABLE = ['open', 'completed']
 
   // 1) Exact match on the checkout's own id (no time window — it IS this cart).
   if (externalId) {
     const { data } = await sb.from('abandoned_carts')
-      .select('id, last_step_sent, abandoned_at')
-      .eq('client_id', input.clientId).eq('status', 'open').eq('external_id', externalId)
+      .select('id, last_step_sent, abandoned_at, status')
+      .eq('client_id', input.clientId).in('status', RECOVERABLE).eq('external_id', externalId)
       .limit(1)
     if (data?.[0]) { exactMatch = data[0]; byId.set(data[0].id, data[0]) }
   }
@@ -227,14 +242,14 @@ export async function recoverCartsForOrder(input: {
   const buyerQueries: PromiseLike<{ data: CartRow[] | null; error: any }>[] = []
   if (phone) {
     buyerQueries.push(sb.from('abandoned_carts')
-      .select('id, last_step_sent, abandoned_at')
-      .eq('client_id', input.clientId).eq('status', 'open').eq('phone', phone)
+      .select('id, last_step_sent, abandoned_at, status')
+      .eq('client_id', input.clientId).in('status', RECOVERABLE).eq('phone', phone)
       .gte('abandoned_at', windowStart).order('abandoned_at', { ascending: false }).limit(50))
   }
   if (email) {
     buyerQueries.push(sb.from('abandoned_carts')
-      .select('id, last_step_sent, abandoned_at')
-      .eq('client_id', input.clientId).eq('status', 'open').eq('email', email)
+      .select('id, last_step_sent, abandoned_at, status')
+      .eq('client_id', input.clientId).in('status', RECOVERABLE).eq('email', email)
       .gte('abandoned_at', windowStart).order('abandoned_at', { ascending: false }).limit(50))
   }
   for (const q of buyerQueries) {
@@ -261,10 +276,12 @@ export async function recoverCartsForOrder(input: {
     updated_at: nowIso,
   }).eq('id', primary.id)
 
-  // Stop the buyer's OTHER open carts. Prefer a distinct 'superseded' status so
-  // "stopped because they bought" isn't conflated with "sequence finished"; if
-  // the DB constrains status values and rejects it, fall back to 'completed'.
-  const others = all.filter(c => c.id !== primary.id).map(c => c.id)
+  // Stop the buyer's OTHER carts that are still IN FLIGHT. Prefer a distinct
+  // 'superseded' status so "stopped because they bought" isn't conflated with
+  // "sequence finished"; if the DB constrains status values and rejects it,
+  // fall back to 'completed'. A cart that already reads 'completed' has nothing
+  // left to send, so it is left alone rather than relabelled.
+  const others = all.filter(c => c.id !== primary.id && c.status === 'open').map(c => c.id)
   if (others.length) {
     const { error: supErr } = await sb.from('abandoned_carts')
       .update({ status: 'superseded', next_step_at: null, updated_at: nowIso }).in('id', others)
@@ -370,8 +387,12 @@ export async function runCartAbandonmentTick(
 
       // 5) Templates. Keyed by name|language so the same template name in two
       //    languages can't collide (last-write-wins previously picked at random).
+      //    `button_config` is needed too: `has_buttons` is true for ANY button
+      //    (quick-reply, phone-number, static URL), and attaching a URL
+      //    parameter to one of those makes Meta reject the whole send.
       const { data: tmpls } = await sb.from('whatsapp_templates')
-        .select('template_name, status, variable_count, language, has_buttons').eq('client_id', clientId)
+        .select('template_name, status, variable_count, language, has_buttons, button_config')
+        .eq('client_id', clientId)
       const tmplByKey: Record<string, any> = {}
       const tmplByName: Record<string, any> = {}
       ;(tmpls || []).forEach(t => {
@@ -444,12 +465,45 @@ export async function runCartAbandonmentTick(
         const trackingLink = `${base}/r/${cartSlug}`
         const varMap = step.variable_map || {}
         const variables: string[] = []
+        let linkInBody = false
         for (let v = 1; v <= (tmpl.variable_count || 0); v++) {
           const key = varMap[`{{${v}}}`] || varMap[String(v)]
           if (key === '__name__') variables.push(cart.contact_name || 'there')
-          else if (key === '__link__') variables.push(trackingLink)
+          else if (key === '__link__') { variables.push(trackingLink); linkInBody = true }
           else if (key === '__code__') variables.push(step.coupon_code || '')
           else variables.push(key || '')
+        }
+
+        // Meta rejects EMPTY body parameters outright, so an unmapped variable
+        // (or __code__ on a step with no coupon) used to fail every send for
+        // this step and silently retry it daily until the cart expired. A
+        // single space is a valid parameter and keeps the message deliverable.
+        for (let i = 0; i < variables.length; i++) {
+          if (!variables[i].trim()) variables[i] = ' '
+        }
+
+        // Where does the shopper's link actually live? Two valid answers:
+        //   a) a DYNAMIC url button — base url ending in {{1}}, param = slug
+        //   b) the message body — the `__link__` variable, full URL
+        // `has_buttons` is true for quick-reply and phone-number buttons too,
+        // and for static URL buttons that take no parameter; passing a URL
+        // parameter to any of those makes Meta 400 the message. Find the real
+        // one instead of assuming index 0.
+        const urlButtonIndex = findDynamicUrlButtonIndex(tmpl.button_config)
+
+        // Neither route available → the message would reach the shopper with no
+        // way back to their cart, and we'd still be billed for it. Hold instead,
+        // so the brand can fix the mapping; expiry_days caps the wait.
+        if (urlButtonIndex < 0 && !linkInBody) {
+          held++
+          console.error('[cart tick] no link route on template', {
+            clientId, step: stepNo, template: step.template_name,
+          })
+          await sb.from('abandoned_carts').update({
+            next_step_at: nextSendInstant(nowIso, 1, sendHour),
+            updated_at: nowIso,
+          }).eq('id', cart.id)
+          continue
         }
 
         sendBudget--
@@ -459,9 +513,7 @@ export async function runCartAbandonmentTick(
           language: step.language || tmpl.language || 'en',
           variables,
           trackingUrl: cartSlug,
-          // Only attach a URL-button component when the template actually HAS
-          // buttons — Meta rejects the send outright otherwise.
-          hasButtons: !!tmpl.has_buttons,
+          urlButtonIndex,
         })
 
         if ('error' in result) {
