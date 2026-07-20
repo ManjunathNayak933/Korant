@@ -1,6 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  app/api/webhook/shopify-checkout/route.ts   (NEW FILE)          │
-// │ Create at <repo-root>/app/api/webhook/shopify-checkout/route.ts            │
+// │ REPO PATH:  app/api/webhook/shopify-checkout/route.ts                      │
 // │                                                                            │
 // │ Shopify ADAPTER for cart abandonment. Subscribed to CHECKOUTS_CREATE and   │
 // │ CHECKOUTS_UPDATE (see registerShopifyCheckoutWebhooks in lib/shopify.ts).  │
@@ -9,8 +8,11 @@
 // │ HMAC, normalise the checkout into the neutral shape, and hand it to        │
 // │ intakeAbandonedCart(). The order webhook handles recovery separately.      │
 // │                                                                            │
-// │ Public via middleware's `/api/webhook/` prefix. Does NOT touch the         │
-// │ existing order webhook.                                                    │
+// │ Belt-and-braces: lib/cart-abandonment also POLLS the GraphQL Admin         │
+// │ `abandonedCheckouts` query each tick, so a dropped webhook doesn't lose    │
+// │ the cart. Both paths dedupe on the checkout token via external_id.         │
+// │                                                                            │
+// │ Public via middleware's `/api/webhook/` prefix.                            │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
@@ -18,6 +20,19 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { verifyShopifyHmacRaw } from '@/lib/shopify'
 import { intakeAbandonedCart } from '@/lib/cart-abandonment'
+
+// Shopify represents marketing consent as an OBJECT, not a boolean:
+//   { state: 'not_subscribed', opt_in_level: 'single_opt_in', ... }
+// The old check was `!!checkout.sms_marketing_consent`, which is TRUE for a
+// shopper who explicitly declined — so decliners were stored opted_in and
+// messaged. That's a Meta WhatsApp policy breach and a DPDP Act problem in
+// India. Only an explicit SUBSCRIBED state counts.
+function hasMarketingConsent(consent: any): boolean {
+  if (consent === true) return true
+  if (!consent || typeof consent !== 'object') return false
+  const state = String(consent.state ?? consent.marketing_state ?? consent.marketingState ?? '')
+  return state.toLowerCase() === 'subscribed'
+}
 
 export async function POST(request: NextRequest) {
   const raw = await request.text()
@@ -34,12 +49,19 @@ export async function POST(request: NextRequest) {
 
   const sb = getSupabaseAdmin()
   const { data: client } = await sb
-    .from('clients').select('id').eq('shopify_domain', shop).single()
+    .from('clients').select('id').eq('shopify_domain', shop).maybeSingle()
   if (!client) return NextResponse.json({ error: 'Store not connected' }, { status: 404 })
 
   let checkout: any
   try { checkout = JSON.parse(raw) } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+
+  // A completed checkout is an ORDER, not an abandoned cart. Shopify fires
+  // CHECKOUTS_UPDATE on completion too — without this the cart is re-opened
+  // and re-scheduled moments after the customer actually paid.
+  if (checkout.completed_at) {
+    return NextResponse.json({ received: true, skipped: 'checkout completed' })
   }
 
   // Pull identity + cart out of the checkout object. Phone can live in a few
@@ -55,11 +77,13 @@ export async function POST(request: NextRequest) {
     title: li.title, qty: li.quantity, price: parseFloat(li.price || '0'),
   }))
 
-  // A logged-in customer means we knew them before checkout; otherwise this is a
-  // checkout-entered identity. Meta marketing opt-in still has to be true — take
-  // Shopify's SMS/marketing consent as the signal if present, else false.
+  // A logged-in customer means we knew them before checkout; otherwise this is
+  // a checkout-entered identity.
   const identitySource = checkout.customer?.id ? 'logged_in' : 'checkout'
-  const optedIn = !!(checkout.buyer_accepts_marketing || checkout.sms_marketing_consent)
+  const optedIn =
+    checkout.buyer_accepts_marketing === true
+    || hasMarketingConsent(checkout.sms_marketing_consent)
+    || hasMarketingConsent(checkout.customer?.sms_marketing_consent)
 
   const result = await intakeAbandonedCart({
     clientId: client.id,
@@ -67,7 +91,7 @@ export async function POST(request: NextRequest) {
     email,
     name: checkout.customer?.first_name
       ? `${checkout.customer.first_name} ${checkout.customer.last_name || ''}`.trim()
-      : (checkout.billing_address?.name || null),
+      : (checkout.billing_address?.name || checkout.shipping_address?.name || null),
     optedIn,
     identitySource,
     cartValue: parseFloat(checkout.total_price || '0'),
