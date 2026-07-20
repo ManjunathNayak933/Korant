@@ -17,6 +17,19 @@ const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'fallback-secret-change-in-production-32chars'
 )
 
+// Paths that must be reachable WITHOUT an app session.
+//
+// Two changes vs. the previous list:
+//  + '/api/cron/'  — the cart-abandonment tick is invoked by an external
+//    scheduler that has no cookie. It authenticates itself with CRON_SECRET
+//    (see app/api/cron/cart-abandonment/route.ts), which fails closed.
+//    Without this entry the scheduler was 401'd by middleware and the whole
+//    recovery sequence never ran.
+//  - '/api/whatsapp/connect' — REMOVED. That route reads x-user-id, which
+//    middleware only sets after verifying the JWT; public paths have the
+//    header stripped. Listing it here meant the config was written with a
+//    null client_id (so nobody could ever connect WhatsApp) AND left an
+//    unauthenticated write endpoint exposed.
 const PUBLIC_PATHS = [
   '/login',
   '/paused',
@@ -24,8 +37,8 @@ const PUBLIC_PATHS = [
   '/r/',
   '/api/auth/',
   '/api/webhook/',
+  '/api/cron/',
   '/api/shopify/callback', // Shopify's OAuth redirect — no app session
-  '/api/whatsapp/connect',
   '/api/affiliate-signup/',
   '/api/marketplace/',
   '/api/beacon',
