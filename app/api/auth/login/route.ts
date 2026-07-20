@@ -1,7 +1,16 @@
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  app/api/auth/login/route.ts                                    │
+// │                                                                            │
+// │ Rate limiting is now two-dimensional. IP-only limiting (the previous       │
+// │ behaviour) doesn't stop a distributed password spray: 10,000 hosts each    │
+// │ trying one password against one mailbox never trip a per-IP counter. The   │
+// │ per-account limiter closes that; the per-IP limiter still stops one host   │
+// │ enumerating many accounts.                                                 │
+// └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
-import { loginUser, buildAuthCookie, checkRateLimit } from '@/lib/auth'
+import { loginUser, buildAuthCookie, checkRateLimit, checkAccountRateLimit } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,7 +20,15 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'unknown'
-    if (!(await checkRateLimit(`login:${ip}`))) {
+
+    // Both limits are checked before any password work happens.
+    const [ipOk, acctOk] = await Promise.all([
+      checkRateLimit(`login:${ip}`),
+      checkAccountRateLimit(String(email)),
+    ])
+    if (!ipOk || !acctOk) {
+      // Deliberately the same message for both, so the response doesn't reveal
+      // whether the account or the address hit the limit.
       return NextResponse.json({ error: 'Too many login attempts. Try again in 15 minutes.' }, { status: 429 })
     }
 
