@@ -1,6 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  app/api/webhook/shopify/route.ts                               │
-// │ Replace the existing file at <repo-root>/app/api/webhook/shopify/route.ts  │
 // │                                                                            │
 // │ Accepts orders two ways:                                                   │
 // │  A) App-registered (Connect Shopify): signed with the app secret           │
@@ -33,7 +32,7 @@ export async function POST(request: NextRequest) {
       .from('clients')
       .select('id, webhook_secret, shopify_domain')
       .eq('id', cid)
-      .single()
+      .maybeSingle()
     if (!data) return NextResponse.json({ error: 'Unknown client' }, { status: 404 })
     if (!data.webhook_secret || k !== data.webhook_secret) {
       return NextResponse.json({ error: 'Invalid or missing key' }, { status: 401 })
@@ -53,7 +52,7 @@ export async function POST(request: NextRequest) {
       .from('clients')
       .select('id, shopify_domain')
       .eq('shopify_domain', shop)
-      .single()
+      .maybeSingle()
     if (!data) return NextResponse.json({ error: 'Store not connected' }, { status: 404 })
     client = { id: data.id, shopify_domain: data.shopify_domain }
   }
@@ -114,14 +113,16 @@ export async function POST(request: NextRequest) {
   })
 
   // Cart abandonment: stop any open sequence for this buyer and credit the
-  // recovery to whichever message was live when they bought. Matches by
-  // phone/email; a no-op when the buyer had no abandoned cart. Best-effort.
+  // recovery to whichever message was live when they bought. Matches on the
+  // checkout token FIRST (exact — it's the same id intake stored as
+  // external_id), then falls back to phone/email. Best-effort.
   await recoverCartsForOrder({
     clientId: client.id,
     phone: order.phone || order.customer?.phone || order.shipping_address?.phone || order.billing_address?.phone || null,
     email: order.email || order.customer?.email || null,
     orderId: String(order.id),
     orderValue: parseFloat(order.total_price || '0'),
+    externalId: order.checkout_token || (order.checkout_id ? String(order.checkout_id) : null),
   })
 
   return NextResponse.json({ received: true, attributed: result.attributed, channel: result.channel })
