@@ -8,26 +8,20 @@
 // │                                                                            │
 // │ Scheduling is IST-only (Asia/Kolkata).                                     │
 // │                                                                            │
-// │ ── Fixes in this revision ────────────────────────────────────────────────│
-// │ B1  The step write used                                                    │
-// │       .upsert(row, { onConflict: 'client_id,step_no' })                    │
-// │     but no unique index on (client_id, step_no) exists, and Postgres       │
-// │     validates the conflict target at PLAN time — so EVERY save returned    │
-// │     500 "there is no unique or exclusion constraint matching the ON        │
-// │     CONFLICT specification", including the very first one. Worse, the      │
-// │     cart_sequences upsert above it had already succeeded, leaving the      │
-// │     brand with `enabled = true` and zero steps: the tick then found        │
-// │     nothing to send and reported a healthy `{ok: true, sent: 0}`.          │
-// │     Steps are now written explicitly (delete + single batch insert), so    │
-// │     this route works with or without the new index — and everything that   │
-// │     can fail (coupon ownership, provider calls) is validated BEFORE the    │
-// │     existing rows are touched.                                             │
-// │ M8  Steps were matched to their saved row POSITIONALLY. Deleting message   │
-// │     1 made message 2 become step 1 and inherit step 1's tracking_slug —    │
-// │     so links already sitting in customers' WhatsApp silently started       │
-// │     resolving to a different message's coupon. Steps now carry their row   │
-// │     `id`, so a slug follows the message it belongs to, and reordering no   │
-// │     longer collides on (client_id, step_no).                               │
+// │ ── Fixes in THIS revision ────────────────────────────────────────────────│
+// │ P3a MOVING A COUPON BETWEEN MESSAGES WAS REJECTED. findDiscountCodeOwner  │
+// │     ran before the DELETE, so the row that still held the code owned it,  │
+// │     and self-exclusion passed a single step_no. Shifting COMEBACK10 from  │
+// │     message 1 to message 2 in one save returned a 409 naming the brand's  │
+// │     own message. Every step in the incoming payload is now excluded from  │
+// │     the ownership check.                                                   │
+// │ P3b THE SAVE WAS NOT ATOMIC. DELETE and INSERT were two PostgREST calls;  │
+// │     a crash between them left the brand with enabled = true and ZERO      │
+// │     steps, and the tick then reported a healthy {ok:true, sent:0} while   │
+// │     sending nothing. The restore path only covered an insert ERROR, not   │
+// │     a crash. Both statements now run inside one transaction via the       │
+// │     replace_cart_sequence_steps() RPC, with the old two-call path kept as │
+// │     a fallback for databases where the migration hasn't been applied.     │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
@@ -141,6 +135,17 @@ export async function PUT(request: NextRequest) {
   const seenCodes = new Set<string>()
   const warnings: string[] = []
 
+  // P3a: every cart step in THIS payload is about to be rewritten, so none of
+  // them can legitimately block a code. Collect their step numbers up front —
+  // findDiscountCodeOwner identifies cart steps by step_no, and the rows still
+  // sitting in the table are the pre-save positions.
+  const payloadStepNos = new Set<number>()
+  steps.forEach((s: any, i: number) => {
+    const prior = (s?.id && existingById[s.id]) || (!s?.id ? existingByNo[i + 1] : null) || null
+    if (prior?.step_no != null) payloadStepNos.add(Number(prior.step_no))
+    payloadStepNos.add(i + 1)
+  })
+
   // ── 3) Build every row FIRST. Nothing existing is touched until the whole
   //       payload has passed validation, so a rejected coupon on message 3
   //       can't leave the brand with a half-saved sequence.
@@ -179,8 +184,16 @@ export async function PUT(request: NextRequest) {
       // lose attribution — see lib/codes.ts). Cart steps are registered owners
       // there, so the check is symmetric: an influencer created later can no
       // longer steal a code a cart step is already using.
-      const owner = await findDiscountCodeOwner(userId, code, { table: 'cart_sequence_steps', id: String(prior?.step_no ?? stepNo) })
-      if (owner) {
+      const owner = await findDiscountCodeOwner(
+        userId, code, { table: 'cart_sequence_steps', id: String(prior?.step_no ?? stepNo) }
+      )
+      // A cart step that this very save is replacing must not block the code —
+      // that's what made moving a coupon from message 1 to message 2 fail.
+      // (Two steps in the SAME payload claiming one code is still caught by
+      // `seenCodes` above.)
+      const isOwnPayloadStep =
+        owner?.table === 'cart_sequence_steps' && payloadStepNos.has(Number(owner.id))
+      if (owner && !isOwnPayloadStep) {
         return NextResponse.json(
           { error: `Step ${stepNo}: coupon "${code}" is already used by ${owner.name}. Pick a different code.` },
           { status: 409 }
@@ -224,21 +237,52 @@ export async function PUT(request: NextRequest) {
   // with one, reordering messages transiently collides on it — step_no is
   // CHECK-constrained to 1..3 so we can't park rows on a temporary value.
   // Deleting first and inserting the whole set in ONE statement avoids both.
-  const { error: delErr } = await sb.from('cart_sequence_steps').delete().eq('client_id', userId)
-  if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 })
-
   let savedSteps: any[] = []
-  if (rows.length) {
-    const { data, error: insErr } = await sb.from('cart_sequence_steps').insert(rows).select()
-    if (insErr) {
-      // Best-effort restore so a failed save never destroys a live sequence.
-      if (existing.length) await sb.from('cart_sequence_steps').insert(existing)
-      return NextResponse.json(
-        { error: `Could not save the messages: ${insErr.message}. Your previous sequence has been restored.` },
-        { status: 500 }
+  let atomic = false
+
+  // Preferred path: one transaction (see database/migrations/
+  // 2026-07-cart-abandonment-fixes.sql). There is no window in which the brand
+  // has enabled = true and no steps.
+  {
+    const rpc = await sb.rpc('replace_cart_sequence_steps', {
+      p_client_id: userId,
+      p_steps: rows,
+    })
+    if (!rpc.error) {
+      atomic = true
+      savedSteps = rpc.data || []
+    } else {
+      const code = String((rpc.error as any).code || '')
+      const msg = String((rpc.error as any).message || '')
+      const missing = code === '42883' || code.startsWith('PGRST2') || /function .* does not exist|schema cache/i.test(msg)
+      if (!missing) {
+        return NextResponse.json({ error: `Could not save the messages: ${rpc.error.message}` }, { status: 500 })
+      }
+      console.warn(
+        '[cart-sequence] replace_cart_sequence_steps() not found — falling back to delete+insert. ' +
+        'Run database/migrations/2026-07-cart-abandonment-fixes.sql to make this save atomic.'
       )
     }
-    savedSteps = data || []
+  }
+
+  // Fallback: the original two-statement path, for databases without the RPC.
+  if (!atomic) {
+    const { error: delErr } = await sb.from('cart_sequence_steps').delete().eq('client_id', userId)
+    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 })
+
+    if (rows.length) {
+      const { data, error: insErr } = await sb.from('cart_sequence_steps').insert(rows).select()
+      if (insErr) {
+        // Best-effort restore so a failed save never destroys a live sequence.
+        if (existing.length) await sb.from('cart_sequence_steps').insert(existing)
+        return NextResponse.json(
+          { error: `Could not save the messages: ${insErr.message}. Your previous sequence has been restored.` },
+          { status: 500 }
+        )
+      }
+      savedSteps = data || []
+    }
+    warnings.push('Saved, but this database has no replace_cart_sequence_steps() function, so the write was not atomic. Apply database/migrations/2026-07-cart-abandonment-fixes.sql.')
   }
 
   // ── 5) Bust the KV cache for every slug we touched. The /r/[slug] resolver
