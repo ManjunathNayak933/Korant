@@ -1,20 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/whatsapp.ts                                            │
-// │ ── Fixes in THIS revision ──────────────────────────────────────────── │
-// │ P2a variable_count counted OCCURRENCES of {{n}}, not distinct          │
-// │     variables. A body reading "Hi {{1}}, your {{2}} is waiting — see   │
-// │     you soon {{1}}" stored 3, so the sender built three parameters for │
-// │     a two-parameter template and Meta rejected EVERY send with 132000  │
-// │     "number of parameters does not match". The cart tick treats that   │
-// │     as retry-tomorrow, so the step failed silently once a day until    │
-// │     the cart expired. It is now the MAX INDEX, which is what Meta      │
-// │     actually requires (a body using only {{2}} still needs two).       │
-// │ P2b sendTemplateMessage() never built a HEADER component, but the      │
-// │     schema stores header_type/header_media_id/header_media_url and     │
-// │     buildTemplateComponents() happily submits IMAGE/VIDEO/DOCUMENT     │
-// │     headers to Meta. Any media-headed template — i.e. nearly every     │
-// │     cart-recovery template — was rejected 100% of the time with        │
-// │     "parameters missing".                                              │
 // └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 
@@ -35,6 +20,30 @@ export function countTemplateVariables(bodyText: string | null | undefined): num
 // Graph API versions stay supported ~2 years; override per-deploy if needed.
 const META_VERSION = process.env.WHATSAPP_GRAPH_VERSION || 'v25.0'
 const META_BASE = `https://graph.facebook.com/${META_VERSION}`
+
+// ── FIX 5 ────────────────────────────────────────────────────────────────────
+// A template's `example.header_handle[0]` is TWO different things depending on
+// where the template came from:
+//   • a resumable-upload handle ("4::aW1hZ2UvanBlZw==:ARb…") for templates
+//     created through the API — an upload-session token, NOT addressable media
+//   • a scontent.whatsapp.net HTTPS url for many Meta-approved templates
+// The sync used to write both into `header_media_url` and the sender passed
+// whatever it found as `{ link }`. Meta requires `link` to be a real http(s)
+// URL it can fetch, so every handle-flavoured template was rejected at send
+// time ("parameters missing" / invalid link) — and since cart-recovery
+// templates are nearly always image-headed, that meant the sequence sent
+// nothing while the tick dutifully retried once a day until the cart expired.
+//
+// One predicate decides which flavour we got, used on both the store and the
+// send side so they can never disagree.
+function asHttpUrl(v: unknown): string | null {
+  const s = String(v ?? '').trim()
+  if (!s) return null
+  try {
+    const u = new URL(s)
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u.toString() : null
+  } catch { return null }
+}
 
 export interface WAConfig {
   phone_number_id: string
@@ -141,7 +150,10 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig):
         status: t.status,
         header_text: headerComp?.text || null,
         header_type: headerComp?.format || null,
-        header_media_url: headerComp?.example?.header_handle?.[0] || null,
+        // FIX 5: a non-URL handle is useless at send time — storing it only
+        // guaranteed a Meta rejection later. Keep null so the sender can give
+        // the brand a clear "set a header image URL" message instead.
+        header_media_url: asHttpUrl(headerComp?.example?.header_handle?.[0]),
         body_text: bodyText,
         footer_text: footerComp?.text || null,
         has_buttons: !!buttonComp,
@@ -328,13 +340,23 @@ export async function sendTemplateMessage(
   if (headerType && headerType !== 'TEXT') {
     const kind = headerType.toLowerCase() // image | video | document
     if (['image', 'video', 'document'].includes(kind)) {
+      // FIX 5: Meta accepts exactly two shapes here — `{ id }` for media
+      // uploaded to /{phone_number_id}/media, or `{ link }` for a publicly
+      // fetchable http(s) URL. An upload-session handle is neither, and passing
+      // one as `link` is what silently killed every image-headed send.
+      const mediaUrl = asHttpUrl(params.headerMediaUrl)
       const media = params.headerMediaId
-        ? { id: params.headerMediaId }
-        : (params.headerMediaUrl ? { link: params.headerMediaUrl } : null)
-      // No media at all → don't send a malformed header component; Meta would
-      // reject it. Fail loudly instead of shipping a message that can't render.
+        ? { id: String(params.headerMediaId) }
+        : (mediaUrl ? { link: mediaUrl } : null)
+
       if (!media) {
-        return { error: `Template "${params.templateName}" has a ${kind} header but no stored media id or url. Re-sync templates (WhatsApp → Templates → Sync) so the header handle is captured.` }
+        return {
+          error:
+            `Template "${params.templateName}" has a ${kind} header, but no usable media is stored for it. ` +
+            `Meta needs either an uploaded media id or a public https link — a template handle from the ` +
+            `Meta dashboard is neither. Add a public ${kind} URL for this message (Cart Abandonment → ` +
+            `message → header ${kind} URL), or rebuild the template in-app so the upload is captured.`,
+        }
       }
       components.push({ type: 'header', parameters: [{ type: kind, [kind]: media }] })
     }
