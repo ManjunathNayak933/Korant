@@ -1,37 +1,11 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  app/api/webhook/shopify-checkout/route.ts                      │
-// │                                                                            │
-// │ Shopify ADAPTER for cart abandonment. Subscribed to CHECKOUTS_CREATE and   │
-// │ CHECKOUTS_UPDATE (see registerShopifyCheckoutWebhooks in lib/shopify.ts).  │
-// │ Shopify fires these when a shopper reaches checkout and enters details but │
-// │ hasn't paid — that's the reachable "abandoned cart". We verify the app     │
-// │ HMAC, normalise the checkout into the neutral shape, and hand it to        │
-// │ intakeAbandonedCart(). The order webhook handles recovery separately.      │
-// │                                                                            │
-// │ Belt-and-braces: lib/cart-abandonment also POLLS the GraphQL Admin         │
-// │ `abandonedCheckouts` query each tick, so a dropped webhook doesn't lose    │
-// │ the cart. Both paths dedupe on the checkout token via external_id.         │
-// │                                                                            │
-// │ Public via middleware's `/api/webhook/` prefix.                            │
-// │                                                                            │
-// │ ── Fix in this revision (M3) ─────────────────────────────────────────────│
-// │ `buyer_accepts_marketing` was treated as consent to send a WhatsApp        │
-// │ marketing template. That flag is EMAIL marketing consent — it is not       │
-// │ permission to message someone on WhatsApp, which is exactly the class of   │
-// │ bug this file's previous fix (the sms_marketing_consent object) closed.    │
-// │ Under Meta's WhatsApp Business policy the opt-in has to be for THIS        │
-// │ channel, and under the DPDP Act consent is purpose-bound. Only an explicit │
-// │ SMS/WhatsApp subscription now counts.                                      │
-// │                                                                            │
-// │ If you collect a WhatsApp opt-in checkbox at checkout, pass it through as  │
-// │ a cart attribute named `whatsapp_opt_in` (or `wa_opt_in`) — it is read     │
-// │ below. Fully custom checkouts should POST to /api/webhook/cart instead.    │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { verifyShopifyHmacRaw } from '@/lib/shopify'
+import { verifyShopifyHmacRaw, tokenFromRecoveryUrl } from '@/lib/shopify'
 import { intakeAbandonedCart } from '@/lib/cart-abandonment'
 
 // Shopify represents marketing consent as an OBJECT, not a boolean:
@@ -130,6 +104,22 @@ export async function POST(request: NextRequest) {
   const identitySource = checkout.customer?.id ? 'logged_in' : 'checkout'
   const consent = readChannelConsent(checkout)
 
+  // ── FIX 3: one cart, one row ─────────────────────────────────────────────
+  // This route used to store `checkout.token` and nothing else, while the
+  // hourly GraphQL poll stored the token it parsed out of the recovery URL. On
+  // Checkout Extensibility stores (the default since Aug 2024) that URL is
+  // `/checkouts/cn/<token>/recover` and the `cn` token is NOT the REST
+  // checkout token — so neither side recognised the other's id, every cart
+  // existed twice, and the shopper was messaged (and Meta billed) twice.
+  //
+  // The numeric `checkout.id` is the one value BOTH paths see, so it is now the
+  // canonical key. The other ids ride along as alternates: intake looks the
+  // cart up under all of them before inserting, which also picks up rows
+  // written by the previous build.
+  const numericId = checkout.id ? String(checkout.id) : ''
+  const recoveryToken = tokenFromRecoveryUrl(checkout.abandoned_checkout_url)
+  const primaryId = numericId || checkout.token || recoveryToken || null
+
   const result = await intakeAbandonedCart({
     clientId: client.id,
     phone,
@@ -145,8 +135,27 @@ export async function POST(request: NextRequest) {
     items,
     recoveryUrl: checkout.abandoned_checkout_url || null,
     source: 'shopify',
-    externalId: checkout.token || String(checkout.id || ''),
+    externalId: primaryId,
+    altExternalIds: [checkout.token, recoveryToken, numericId],
+    // The webhook fires within seconds, but Shopify still stamps the checkout
+    // itself — use that so the H4 schedule anchor and the expiry clock agree
+    // with whatever the poll would have written for the same checkout.
+    abandonedAt: checkout.created_at || null,
   })
+
+  // A storage failure used to come back as a plain 200, so Shopify's webhook
+  // log showed "delivered" for a cart that was never written and never retried.
+  // 500 makes Shopify redeliver (it retries for ~48h) and makes the failure
+  // visible in the store's webhook dashboard.
+  if (!result.stored) {
+    console.error('[webhook/shopify-checkout] intake failed', {
+      clientId: client.id, externalId: primaryId, reason: result.reason,
+    })
+    // `no_contact` is not an error — the shopper hadn't entered a phone or an
+    // email yet, so there is genuinely nothing to store. Retrying won't help.
+    const status = result.reason === 'no_contact' ? 200 : 500
+    return NextResponse.json({ received: true, ...result }, { status })
+  }
 
   return NextResponse.json({ received: true, ...result })
 }
