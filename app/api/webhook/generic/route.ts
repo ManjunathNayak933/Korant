@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
-import { recoverCartsForOrder } from '@/lib/cart-abandonment'
+import { recoverCartsForOrder, reverseCartRecovery } from '@/lib/cart-abandonment'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -53,8 +53,14 @@ export async function POST(request: NextRequest) {
   const REVERSAL_TYPES = new Set(['refund', 'return', 'cancel', 'cancelled', 'cancellation', 'reversal'])
   if (REVERSAL_TYPES.has(String(eventType).toLowerCase())) {
     const reason = /cancel/i.test(String(eventType)) ? 'cancelled' : 'refund'
-    const r = await reverseSale({ clientId, orderId: String(body.orderId), platform: 'generic', reason })
-    return NextResponse.json({ received: true, reversed: r.reversed })
+    // reverseSale() only writes to `events`. Without the second call the
+    // abandoned cart stays status = 'recovered' with its full recovered_value,
+    // so the Cart Abandonment tab's recovered revenue only ever goes up.
+    const [r, c] = await Promise.all([
+      reverseSale({ clientId, orderId: String(body.orderId), platform: 'generic', reason }),
+      reverseCartRecovery({ clientId, orderId: String(body.orderId) }),
+    ])
+    return NextResponse.json({ received: true, reversed: r.reversed, cartsReversed: c.reversed })
   }
 
   if (eventType === 'lead') {
