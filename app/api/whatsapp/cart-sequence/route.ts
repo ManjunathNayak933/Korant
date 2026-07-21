@@ -1,27 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  app/api/whatsapp/cart-sequence/route.ts                        │
-// │                                                                            │
-// │ GET  → the brand's current sequence config + up to 3 steps.               │
-// │ PUT  → save it. Creates a per-step tracking slug (the "3 UTM links"),      │
-// │        and, when a step carries a coupon, creates it on Shopify/Razorpay   │
-// │        exactly like the campaign create route does.                        │
-// │                                                                            │
-// │ Scheduling is IST-only (Asia/Kolkata).                                     │
-// │                                                                            │
-// │ ── Fixes in THIS revision ────────────────────────────────────────────────│
-// │ P3a MOVING A COUPON BETWEEN MESSAGES WAS REJECTED. findDiscountCodeOwner  │
-// │     ran before the DELETE, so the row that still held the code owned it,  │
-// │     and self-exclusion passed a single step_no. Shifting COMEBACK10 from  │
-// │     message 1 to message 2 in one save returned a 409 naming the brand's  │
-// │     own message. Every step in the incoming payload is now excluded from  │
-// │     the ownership check.                                                   │
-// │ P3b THE SAVE WAS NOT ATOMIC. DELETE and INSERT were two PostgREST calls;  │
-// │     a crash between them left the brand with enabled = true and ZERO      │
-// │     steps, and the tick then reported a healthy {ok:true, sent:0} while   │
-// │     sending nothing. The restore path only covered an insert ERROR, not   │
-// │     a crash. Both statements now run inside one transaction via the       │
-// │     replace_cart_sequence_steps() RPC, with the old two-call path kept as │
-// │     a fallback for databases where the migration hasn't been applied.     │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
@@ -42,6 +20,21 @@ export const dynamic = 'force-dynamic'
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = Math.trunc(numOr(v, def))
   return Math.min(max, Math.max(min, n))
+}
+
+// FIX 5: per-step header media. Templates approved in the Meta dashboard come
+// back carrying an upload-session HANDLE, not a fetchable URL, so there is
+// frequently nothing on the template row that Meta will accept at send time.
+// Letting the step name a public image is the shortest path to an image-headed
+// cart template that actually delivers. https only — this URL is fetched by
+// Meta and rendered to a real customer.
+function safeMediaUrl(raw: unknown): string | null {
+  const s = String(raw ?? '').trim()
+  if (!s) return null
+  try {
+    const u = new URL(s)
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u.toString() : null
+  } catch { return null }
 }
 
 export async function GET(request: NextRequest) {
@@ -227,6 +220,9 @@ export async function PUT(request: NextRequest) {
       shopify_price_rule_id: priceRuleId,
       razorpay_offer_id: offerId,
       tracking_slug: slug,
+      // FIX 5: falls back to the previously saved value so an edit that doesn't
+      // touch the image can't blank it out.
+      header_media_url: safeMediaUrl(s.header_media_url) ?? (prior?.header_media_url || null),
       updated_at: nowIso,
     })
   }
@@ -240,14 +236,37 @@ export async function PUT(request: NextRequest) {
   let savedSteps: any[] = []
   let atomic = false
 
+  // FIX 5: `header_media_url` is a NEW column. On a database where the
+  // migration hasn't run yet PostgREST rejects the entire write — and on the
+  // non-atomic fallback path below that rejection lands AFTER the delete, which
+  // would wipe a live sequence. Detect the unknown column and retry without it,
+  // so shipping this code ahead of the SQL is safe.
+  const isUnknownColumn = (err: any): boolean => {
+    const code = String(err?.code || '')
+    const msg = String(err?.message || '')
+    return code === 'PGRST204' || code === '42703' || /header_media_url/i.test(msg)
+  }
+  const stripMedia = (rs: any[]) =>
+    rs.map(({ header_media_url, ...rest }: any) => rest)
+  let rowsToWrite = rows
+  let mediaColumnMissing = false
+
   // Preferred path: one transaction (see database/migrations/
   // 2026-07-cart-abandonment-fixes.sql). There is no window in which the brand
   // has enabled = true and no steps.
   {
-    const rpc = await sb.rpc('replace_cart_sequence_steps', {
+    let rpc = await sb.rpc('replace_cart_sequence_steps', {
       p_client_id: userId,
-      p_steps: rows,
+      p_steps: rowsToWrite,
     })
+    if (rpc.error && isUnknownColumn(rpc.error)) {
+      mediaColumnMissing = true
+      rowsToWrite = stripMedia(rowsToWrite)
+      rpc = await sb.rpc('replace_cart_sequence_steps', {
+        p_client_id: userId,
+        p_steps: rowsToWrite,
+      })
+    }
     if (!rpc.error) {
       atomic = true
       savedSteps = rpc.data || []
@@ -270,19 +289,28 @@ export async function PUT(request: NextRequest) {
     const { error: delErr } = await sb.from('cart_sequence_steps').delete().eq('client_id', userId)
     if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 })
 
-    if (rows.length) {
-      const { data, error: insErr } = await sb.from('cart_sequence_steps').insert(rows).select()
-      if (insErr) {
+    if (rowsToWrite.length) {
+      let ins = await sb.from('cart_sequence_steps').insert(rowsToWrite).select()
+      if (ins.error && isUnknownColumn(ins.error)) {
+        mediaColumnMissing = true
+        rowsToWrite = stripMedia(rowsToWrite)
+        ins = await sb.from('cart_sequence_steps').insert(rowsToWrite).select()
+      }
+      if (ins.error) {
         // Best-effort restore so a failed save never destroys a live sequence.
         if (existing.length) await sb.from('cart_sequence_steps').insert(existing)
         return NextResponse.json(
-          { error: `Could not save the messages: ${insErr.message}. Your previous sequence has been restored.` },
+          { error: `Could not save the messages: ${ins.error.message}. Your previous sequence has been restored.` },
           { status: 500 }
         )
       }
-      savedSteps = data || []
+      savedSteps = ins.data || []
     }
     warnings.push('Saved, but this database has no replace_cart_sequence_steps() function, so the write was not atomic. Apply database/migrations/2026-07-cart-abandonment-fixes.sql.')
+  }
+
+  if (mediaColumnMissing && rows.some(r => r.header_media_url)) {
+    warnings.push('Header image URLs were not saved: this database is missing cart_sequence_steps.header_media_url. Apply database/migrations/2026-07-cart-abandonment-fixes.sql, then save again.')
   }
 
   // ── 5) Bust the KV cache for every slug we touched. The /r/[slug] resolver
