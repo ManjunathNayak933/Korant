@@ -9,6 +9,43 @@
 // │                                                                            │
 // │ ALL SCHEDULING IS IST (Asia/Kolkata, UTC+05:30). IST has no DST, so the   │
 // │ wall-clock math is exact integer arithmetic — no Intl, nothing can throw. │
+// │                                                                            │
+// │ ── Fixes in this revision ────────────────────────────────────────────────│
+// │ H1  recoverCartsForOrder() is now IDEMPOTENT. Shopify fires orders/create │
+// │     AND orders/paid for the same purchase; the second call used to stamp  │
+// │     a second cart of the same buyer with the same order id and value,     │
+// │     double-counting recovered revenue for repeat abandoners.              │
+// │ H2  Concurrent intakes (CHECKOUTS_CREATE + CHECKOUTS_UPDATE + the poll)   │
+// │     used to insert two rows for one checkout and message the shopper      │
+// │     twice. A 23505 from the new unique index is now resolved by re-reading│
+// │     and patching the winning row.                                          │
+// │ H3  The hourly Shopify poll could no longer observe consent for guest     │
+// │     checkouts and wrote opted_in = false over a cart the webhook had      │
+// │     correctly opted in. Consent is only written when the SOURCE ACTUALLY  │
+// │     OBSERVED IT (CartIntake.consentKnown).                                 │
+// │ H4  A refresh recomputed next_step_at from NOW, so a cart abandoned at    │
+// │     23:30 IST slipped a whole day at the 00:30 poll. The schedule is now  │
+// │     derived from the cart's own abandoned_at and never moves once set.    │
+// │ H5  A step that was SKIPPED (missing/disabled at tick time) advanced      │
+// │     last_step_sent, so a later purchase was credited to a message that    │
+// │     never went out. The credited step now comes from cart_messages.       │
+// │ H6  The Shopify poll was unbudgeted and ran before any sends — up to ~200 │
+// │     subrequests per client, enough to blow Cloudflare's per-invocation    │
+// │     cap before a single message was attempted. It is now capped, and the  │
+// │     sequence/steps lookup is hoisted out of the per-checkout loop.        │
+// │ H7  MAX_SENDS_PER_RUN was a global budget consumed in a stable client     │
+// │     order, so one large brand starved everyone else every hour. Clients   │
+// │     are shuffled and each gets a slice.                                   │
+// │ M1  A missing BASE_URL produced a relative "/r/…" link inside a real      │
+// │     WhatsApp message. Sends that need a body link now hold instead.       │
+// │ M2  Email-only carts were discarded, so "carts detected" undercounted.    │
+// │     They are stored (unmessageable) and can be messaged later if a phone  │
+// │     arrives on a refresh.                                                  │
+// │ M7  Per-step "sent" is counted for the SAME COHORT as the recoveries      │
+// │     instead of by message timestamp, so the funnel can't mix months.      │
+// │ M9  normalizePhone() strips trunk zeros — "09876543210" and               │
+// │     "+919876543210" now match, so those carts stop being chased after     │
+// │     the customer has paid.                                                 │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from './whatsapp'
@@ -20,21 +57,40 @@ const IST_OFFSET_MS = 5.5 * 3600000       // UTC+05:30, fixed — India has no D
 const DAY_MS = 86400000
 
 // Safety budgets for one cron invocation (Cloudflare caps subrequests per
-// invocation — 1,000 on paid plans). Each send costs ~4 subrequests, so 80
-// sends + per-client overhead stays comfortably under the cap. Anything left
-// over is picked up by the next hourly run (carts stay claimed-and-due).
+// invocation — 1,000 on paid plans). Anything left over is picked up by the
+// next hourly run (carts stay claimed-and-due).
 const MAX_SENDS_PER_RUN = 80
+// Every client gets at least this many sends before the global budget is
+// allowed to run out, so one large brand can't starve the rest of the platform.
+const MIN_SENDS_PER_CLIENT = 5
 const MAX_DUE_CARTS_PER_CLIENT = 200
 // A claimed cart that crashes mid-send self-heals after this lease expires.
 const CLAIM_LEASE_MS = 2 * 3600000
+// Shopify polling costs ~3 subrequests per checkout. Budget it explicitly so it
+// can never consume the invocation before any message is sent.
+const MAX_POLL_INTAKES_PER_CLIENT = 25
+const MAX_POLL_INTAKES_PER_RUN = 100
+// Stats: how many carts we can attribute per-step sends for before the figure
+// degrades to an approximation (150 × 20 = 3,000 carts in the window).
+const STATS_COHORT_CHUNK = 150
+const STATS_MAX_COHORT_CHUNKS = 20
 
 // ── Phone normalisation ─────────────────────────────────────────────────────
-// Strip non-digits, default a bare 10-digit number to India (+91).
+// Strip non-digits, drop trunk/IDD zeros ("0", "00", "0091"), then default a
+// bare 10-digit number to India (+91). Returns '' when the number can't be
+// messaged — the cart is still stored, just not chased.
 export function normalizePhone(raw: string | null | undefined): string {
   let p = String(raw || '').replace(/\D/g, '')
   if (!p) return ''
-  if (p.length === 10) p = `91${p}`
-  return p.length >= 10 ? p : ''
+  // "09876543210" (trunk prefix) and "00919876543210" (IDD prefix) must land on
+  // the same string as "+91 98765 43210", or recovery matching silently misses
+  // and we keep messaging a customer who has already paid.
+  p = p.replace(/^0+/, '')
+  if (!p) return ''
+  if (p.length === 10) p = `91${p}`      // bare Indian mobile
+  // E.164 allows at most 15 digits; anything shorter than 11 here is not a
+  // country code + subscriber number we can dial.
+  return (p.length >= 11 && p.length <= 15) ? p : ''
 }
 
 // ── Scheduling (IST only) ───────────────────────────────────────────────────
@@ -90,6 +146,22 @@ function firstEnabledStep(steps: any[]): any | null {
     .sort((a, b) => (a.step_no || 0) - (b.step_no || 0))[0] || null
 }
 
+// ── Sequence context ────────────────────────────────────────────────────────
+// The per-client config every intake needs. Loading it once and passing it in
+// is what keeps the hourly Shopify poll from costing 2 extra queries PER
+// CHECKOUT (H6) — 50 checkouts used to mean 100 avoidable subrequests.
+export interface SequenceContext { seq: any | null; steps: any[] }
+
+export async function loadSequenceContext(clientId: string): Promise<SequenceContext> {
+  const sb = getSupabaseAdmin()
+  const [{ data: seq }, { data: steps }] = await Promise.all([
+    sb.from('cart_sequences').select('*').eq('client_id', clientId).maybeSingle(),
+    sb.from('cart_sequence_steps').select('step_no, delay_days, enabled')
+      .eq('client_id', clientId).order('step_no', { ascending: true }),
+  ])
+  return { seq: seq || null, steps: steps || [] }
+}
+
 // ── Intake: store/refresh one abandoned cart from any source ─────────────────
 export interface CartIntake {
   clientId: string
@@ -97,6 +169,17 @@ export interface CartIntake {
   email?: string | null
   name?: string | null
   optedIn?: boolean
+  /**
+   * Did this source actually SEE a consent field? Shopify's polled
+   * abandonedCheckouts has no customer node for guest checkouts, and the
+   * minimal fallback query drops consent entirely — in both cases `optedIn`
+   * is false because we don't know, not because the shopper declined.
+   * Writing that over a cart the webhook opted in silently un-subscribes them
+   * from the sequence. Pass false when consent could not be observed; an
+   * observed decline (an explicit "not_subscribed") should pass true so a real
+   * revocation still takes effect.
+   */
+  consentKnown?: boolean
   identitySource?: 'logged_in' | 'checkout' | 'known_visitor'
   cartValue?: number
   currency?: string
@@ -106,40 +189,50 @@ export interface CartIntake {
   externalId?: string | null
 }
 
+export interface IntakeResult {
+  stored: boolean
+  cartId?: string
+  scheduled?: boolean
+  messageable?: boolean
+  reason?: string
+}
+
 export async function intakeAbandonedCart(
-  input: CartIntake
-): Promise<{ stored: boolean; cartId?: string; scheduled?: boolean; reason?: string }> {
+  input: CartIntake,
+  ctx?: SequenceContext
+): Promise<IntakeResult> {
   const sb = getSupabaseAdmin()
   const phone = normalizePhone(input.phone)
   const email = (input.email || '').trim().toLowerCase() || null
 
-  // No phone → not messageable on WhatsApp. We don't store an unreachable cart.
-  if (!phone) return { stored: false, reason: 'no_phone' }
+  // Nothing to identify the shopper by at all — there is no cart to speak of.
+  // (An email-only cart IS stored: it counts as detected, and if a later
+  // refresh brings a phone we can start chasing it.)
+  if (!phone && !email) return { stored: false, reason: 'no_contact' }
 
-  // Load the sequence + steps so we can decide whether to schedule and compute
-  // the FIRST ENABLED step's due time (disabling message 1 no longer silently
-  // kills the whole sequence — we start from whichever step is enabled first).
-  const [{ data: seq }, { data: steps }] = await Promise.all([
-    sb.from('cart_sequences').select('*').eq('client_id', input.clientId).maybeSingle(),
-    sb.from('cart_sequence_steps').select('step_no, delay_days, enabled')
-      .eq('client_id', input.clientId).order('step_no', { ascending: true }),
-  ])
+  const { seq, steps } = ctx || await loadSequenceContext(input.clientId)
+  const startStep = firstEnabledStep(steps)
+  const sendHour = numOr(seq?.send_hour, 10)
+  const startDelay = numOr(startStep?.delay_days, 1)
+  const optedIn = input.optedIn === true
+  const consentKnown = input.consentKnown !== false
 
-  const startStep = firstEnabledStep(steps || [])
-  const canSchedule = !!(seq?.enabled && startStep && (input.optedIn ?? false))
+  // Only a cart we can actually message gets a schedule.
+  const canSchedule = !!(phone && seq?.enabled && startStep && optedIn)
   const nowIso = new Date().toISOString()
-  const nextStepAt = canSchedule
-    ? nextSendInstant(nowIso, numOr(startStep.delay_days, 1), numOr(seq!.send_hour, 10))
-    : null
+  // H4: the schedule belongs to the ABANDONMENT, not to whenever the latest
+  // webhook or poll happened to touch the row.
+  const scheduleFrom = (abandonedAt: string) =>
+    nextSendInstant(abandonedAt || nowIso, startDelay, sendHour)
 
-  const items = input.items || []
+  const items = Array.isArray(input.items) ? input.items : []
   const row: Record<string, any> = {
     client_id: input.clientId,
-    phone,
+    phone: phone || null,
     email,
     contact_name: input.name || null,
     identity_source: input.identitySource || 'checkout',
-    opted_in: input.optedIn ?? false,
+    opted_in: optedIn,
     cart_value: input.cartValue ?? 0,
     currency: input.currency || 'INR',
     item_count: items.length,
@@ -150,51 +243,119 @@ export async function intakeAbandonedCart(
     status: 'open',
     // Start the sequence at the first ENABLED step (step 1 may be disabled).
     last_step_sent: startStep ? (startStep.step_no - 1) : 0,
-    next_step_at: nextStepAt,
+    next_step_at: canSchedule ? scheduleFrom(nowIso) : null,
     abandoned_at: nowIso,
     updated_at: nowIso,
   }
 
-  // Upsert on the source's own id when we have one, so repeated "checkout
-  // updated" webhooks refresh the same cart instead of creating duplicates. We
-  // deliberately DON'T reset last_step_sent on update (a later webhook must not
-  // rewind an in-flight sequence), so only set schedule fields on first insert.
-  if (input.externalId) {
-    const { data: existing } = await sb
-      .from('abandoned_carts')
-      .select('id, last_step_sent, status, recovery_url')
-      .eq('client_id', input.clientId).eq('external_id', input.externalId).maybeSingle()
+  type ExistingCart = {
+    id: string
+    status: string
+    opted_in: boolean | null
+    last_step_sent: number | null
+    next_step_at: string | null
+    abandoned_at: string
+    recovery_url: string | null
+    phone: string | null
+    email: string | null
+  }
+  const EXISTING_COLS =
+    'id, status, opted_in, last_step_sent, next_step_at, abandoned_at, recovery_url, phone, email'
 
-    if (existing) {
-      if (existing.status !== 'open') return { stored: true, cartId: existing.id, scheduled: false }
-      const patch: Record<string, any> = {
-        cart_value: row.cart_value, currency: row.currency, item_count: row.item_count,
-        cart_items: row.cart_items,
-        recovery_url: row.recovery_url || existing.recovery_url,
-        phone, email, contact_name: row.contact_name, opted_in: row.opted_in,
-        updated_at: nowIso,
+  const findExisting = async (): Promise<ExistingCart | null> => {
+    if (!input.externalId) return null
+    const { data } = await sb
+      .from('abandoned_carts').select(EXISTING_COLS)
+      .eq('client_id', input.clientId).eq('external_id', input.externalId)
+      .limit(1)
+    return (data?.[0] as ExistingCart) || null
+  }
+
+  // Refresh an existing cart. Deliberately does NOT rewind an in-flight
+  // sequence and does NOT move a schedule that has already been decided.
+  const patchExisting = async (existing: ExistingCart): Promise<IntakeResult> => {
+    if (existing.status !== 'open') {
+      return { stored: true, cartId: existing.id, scheduled: false }
+    }
+
+    // H3: only write consent when this source could actually observe it.
+    const effectiveOptedIn = consentKnown ? optedIn : (existing.opted_in ?? false)
+
+    const patch: Record<string, any> = {
+      cart_value: row.cart_value,
+      currency: row.currency,
+      item_count: row.item_count,
+      cart_items: row.cart_items,
+      recovery_url: row.recovery_url || existing.recovery_url,
+      // Never blank out contact details we already hold with an update that
+      // simply didn't carry them.
+      phone: phone || existing.phone,
+      email: email || existing.email,
+      contact_name: row.contact_name,
+      opted_in: effectiveOptedIn,
+      updated_at: nowIso,
+    }
+
+    const notStartedYet = (existing.last_step_sent ?? 0) === 0
+    const canScheduleNow = !!(patch.phone && seq?.enabled && startStep && effectiveOptedIn)
+
+    if (notStartedYet) {
+      if (!canScheduleNow) {
+        // Consent revoked (or removed) before the first message — stand down.
+        patch.next_step_at = null
+      } else if (!existing.next_step_at) {
+        // H4: first time this cart becomes schedulable. Anchor on when it was
+        // ABANDONED, not on now, so an hourly refresh can't push it a day out.
+        patch.next_step_at = scheduleFrom(existing.abandoned_at)
       }
-      // Only (re)schedule if nothing has been sent yet — and ONLY when the new
-      // schedule is non-null. A later webhook that momentarily lacks consent
-      // fields must not un-schedule an already-scheduled cart.
-      if ((existing.last_step_sent ?? 0) === 0 && nextStepAt) patch.next_step_at = nextStepAt
-      await sb.from('abandoned_carts').update(patch).eq('id', existing.id)
-      return { stored: true, cartId: existing.id, scheduled: !!nextStepAt }
+      // else: already scheduled → leave it exactly where it is.
+    }
+
+    const { error } = await sb.from('abandoned_carts').update(patch).eq('id', existing.id)
+    if (error) return { stored: false, cartId: existing.id, reason: error.message }
+
+    return {
+      stored: true,
+      cartId: existing.id,
+      scheduled: !!(patch.next_step_at ?? existing.next_step_at),
+      messageable: canScheduleNow,
     }
   }
 
+  // Upsert on the source's own id when we have one, so repeated "checkout
+  // updated" webhooks refresh the same cart instead of creating duplicates.
+  const existing = await findExisting()
+  if (existing) return patchExisting(existing)
+
   const { data: inserted, error } = await sb
     .from('abandoned_carts').insert(row).select('id').single()
-  if (error) return { stored: false, reason: error.message }
-  return { stored: true, cartId: inserted.id, scheduled: !!nextStepAt }
+
+  if (error) {
+    // H2: a concurrent delivery won the race and inserted this checkout first
+    // (unique index on client_id + external_id). Treat it as a refresh, not a
+    // failure — otherwise CHECKOUTS_CREATE and CHECKOUTS_UPDATE arriving
+    // together produced two carts and two identical WhatsApp messages.
+    if ((error as any).code === '23505') {
+      const again = await findExisting()
+      if (again) return patchExisting(again)
+    }
+    return { stored: false, reason: error.message }
+  }
+
+  return {
+    stored: true,
+    cartId: inserted.id,
+    scheduled: !!row.next_step_at,
+    messageable: canSchedule,
+  }
 }
 
 // ── Recovery: a purchase arrived — stop the sequence + attribute the sale ─────
 // Called from order webhooks (Shopify orders/paid, generic, Razorpay). Matches
 // FIRST by the checkout's own external id (exact — Shopify orders carry
 // checkout_token, which is what intake stored), then by phone/email against
-// this client's OPEN carts within the expiry window. Phone/email matching runs
-// as separate parameterised queries — no string-built OR filter, so a crafted
+// this client's carts within the expiry window. Phone/email matching runs as
+// separate parameterised queries — no string-built OR filter, so a crafted
 // email can no longer inject PostgREST filter syntax.
 export async function recoverCartsForOrder(input: {
   clientId: string
@@ -203,12 +364,31 @@ export async function recoverCartsForOrder(input: {
   orderId: string
   orderValue: number
   externalId?: string | null   // e.g. Shopify order.checkout_token
-}): Promise<{ recovered: number; step?: number | null }> {
+}): Promise<{ recovered: number; step?: number | null; duplicate?: boolean }> {
   const sb = getSupabaseAdmin()
   const phone = normalizePhone(input.phone)
   const email = (input.email || '').trim().toLowerCase() || null
   const externalId = (input.externalId || '').trim() || null
+  const orderId = String(input.orderId || '').trim()
   if (!phone && !email && !externalId) return { recovered: 0 }
+
+  // ── H1: idempotency ───────────────────────────────────────────────────────
+  // Shopify registers ORDERS_CREATE *and* ORDERS_PAID, and a normal online
+  // checkout fires both with financial_status = 'paid', so this function runs
+  // twice for one purchase. The first run marks the matched cart 'recovered'
+  // and supersedes the buyer's other OPEN carts — but a 'completed' cart of
+  // the same buyer stays matchable by design (that's how a last-message
+  // recovery gets credited), so the second run used to stamp THAT cart with
+  // the same order id and the same value. Recovered revenue was double
+  // counted for every repeat abandoner. One cheap lookup closes it.
+  if (orderId) {
+    const { data: already } = await sb
+      .from('abandoned_carts').select('id, recovered_by_step')
+      .eq('client_id', input.clientId).eq('recovered_order_id', orderId).limit(1)
+    if (already?.[0]) {
+      return { recovered: 0, step: already[0].recovered_by_step ?? 0, duplicate: true }
+    }
+  }
 
   const { data: seq } = await sb
     .from('cart_sequences').select('expiry_days').eq('client_id', input.clientId).maybeSingle()
@@ -263,13 +443,26 @@ export async function recoverCartsForOrder(input: {
   const all = Array.from(byId.values())
     .sort((a, b) => new Date(b.abandoned_at).getTime() - new Date(a.abandoned_at).getTime())
   const primary = exactMatch || all[0]
-  const step = primary.last_step_sent ?? 0
   const nowIso = new Date().toISOString()
+
+  // ── H5: credit the message that ACTUALLY went out ─────────────────────────
+  // last_step_sent is also advanced when a step is SKIPPED (its row is missing
+  // or disabled at tick time), so using it here credited revenue to messages
+  // that were never sent. cart_messages is the record of what left the
+  // building; 0 means "bought before any message", which is what the tab shows
+  // as organic.
+  let step = 0
+  {
+    const { data: delivered } = await sb.from('cart_messages')
+      .select('step_no').eq('cart_id', primary.id).neq('status', 'failed')
+      .order('step_no', { ascending: false }).limit(1)
+    step = delivered?.[0]?.step_no ?? 0
+  }
 
   await sb.from('abandoned_carts').update({
     status: 'recovered',
     recovered_at: nowIso,
-    recovered_order_id: input.orderId,
+    recovered_order_id: orderId,
     recovered_value: input.orderValue || 0,
     recovered_by_step: step,           // 0 = recovered before any message went out
     next_step_at: null,
@@ -296,22 +489,34 @@ export async function recoverCartsForOrder(input: {
 
 // ── Shopify polling fallback ─────────────────────────────────────────────────
 // Belt-and-braces alongside the CHECKOUTS_CREATE/UPDATE webhooks: the GraphQL
-// Admin `abandonedCheckouts` query (2026-07) returns every checkout where the
-// shopper entered contact details but didn't pay — including stores on Checkout
+// Admin `abandonedCheckouts` query returns every checkout where the shopper
+// entered contact details but didn't pay — including stores on Checkout
 // Extensibility where webhook delivery has historically been patchy. Fully
 // external checkouts (GoKwik-style) never reach Shopify at all; those use the
 // platform-neutral /api/webhook/cart endpoint instead.
-async function pollShopifyAbandonedCarts(clientId: string): Promise<number> {
+//
+// H6: `limit` is a hard budget on how many checkouts this may intake, and the
+// sequence context is passed in so the per-checkout cost is ~2 subrequests
+// instead of ~4.
+async function pollShopifyAbandonedCarts(
+  clientId: string,
+  ctx: SequenceContext,
+  limit: number
+): Promise<number> {
+  if (limit <= 0) return 0
   const sinceIso = new Date(Date.now() - DAY_MS).toISOString() // last 24h
-  const checkouts = await fetchShopifyAbandonedCheckouts(clientId, sinceIso)
+  const checkouts = await fetchShopifyAbandonedCheckouts(clientId, sinceIso, limit)
   let stored = 0
   for (const c of checkouts) {
+    if (stored >= limit) break
     const r = await intakeAbandonedCart({
       clientId,
       phone: c.phone,
       email: c.email,
       name: c.name,
       optedIn: c.optedIn,
+      // H3: false when the query couldn't see a consent field at all.
+      consentKnown: c.consentKnown,
       identitySource: 'checkout',
       cartValue: c.totalPrice,
       currency: c.currency,
@@ -319,27 +524,52 @@ async function pollShopifyAbandonedCarts(clientId: string): Promise<number> {
       recoveryUrl: c.recoveryUrl,
       source: 'shopify',
       externalId: c.externalId,
-    })
+    }, ctx)
     if (r.stored) stored++
   }
   return stored
 }
 
 // ── The hourly tick: send whichever step is now due for each open cart ────────
-export async function runCartAbandonmentTick(
-  nowIso = new Date().toISOString()
-): Promise<{ processed: number; sent: number; failed: number; expired: number; held: number; capped: boolean }> {
+export interface TickResult {
+  processed: number
+  sent: number
+  failed: number
+  expired: number
+  held: number
+  polled: number
+  capped: boolean
+  /** Populated when a configuration problem is holding messages back. */
+  warnings: string[]
+}
+
+export async function runCartAbandonmentTick(nowIso = new Date().toISOString()): Promise<TickResult> {
   const sb = getSupabaseAdmin()
   const nowMs = new Date(nowIso).getTime()
-  let processed = 0, sent = 0, failed = 0, expired = 0, held = 0
+  let processed = 0, sent = 0, failed = 0, expired = 0, held = 0, polled = 0
   let capped = false
   let sendBudget = MAX_SENDS_PER_RUN
+  let pollBudget = MAX_POLL_INTAKES_PER_RUN
+  const warnings = new Set<string>()
 
   // Only clients with an enabled sequence are in play (paginated — the 1,000
   // row PostgREST cap must not silently drop clients past it).
   const seqs = await pageAll<any>((from, to) =>
     sb.from('cart_sequences').select('*').eq('enabled', true).range(from, to))
-  if (!seqs.length) return { processed, sent, failed, expired, held, capped }
+  if (!seqs.length) {
+    return { processed, sent, failed, expired, held, polled, capped, warnings: [] }
+  }
+
+  // H7: shuffle. The budget below is global, and PostgREST returns these rows
+  // in a stable order, so the same clients used to drain it every single hour
+  // while the tail of the list never sent anything.
+  for (let i = seqs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[seqs[i], seqs[j]] = [seqs[j], seqs[i]]
+  }
+  const perClientBudget = Math.max(MIN_SENDS_PER_CLIENT, Math.ceil(MAX_SENDS_PER_RUN / seqs.length))
+  const perClientPoll = Math.max(1, Math.min(MAX_POLL_INTAKES_PER_CLIENT,
+    Math.ceil(MAX_POLL_INTAKES_PER_RUN / seqs.length)))
 
   // Paused / suspended clients must not keep messaging customers (or accruing
   // Meta charges). Fetch statuses in chunks and skip anything not active.
@@ -350,7 +580,14 @@ export async function runCartAbandonmentTick(
     for (const c of data || []) statusById[c.id] = c.status
   }
 
-  const base = process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || ''
+  // M1: NEXT_PUBLIC_* is inlined at BUILD time. If it wasn't present in the
+  // build environment and BASE_URL isn't set at runtime, this is '' — and a
+  // `__link__` body variable would ship "/r/slug.cartid" to a real customer.
+  const base = (process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || '').replace(/\/+$/, '')
+  const baseOk = /^https?:\/\//i.test(base)
+  if (!baseOk) {
+    warnings.add('BASE_URL is not set — messages that carry the link in the message body are being held. Set BASE_URL (or NEXT_PUBLIC_BASE_URL at build time) to your public origin.')
+  }
 
   for (const seq of seqs) {
     if (sendBudget <= 0) { capped = true; break }
@@ -361,6 +598,7 @@ export async function runCartAbandonmentTick(
     // One misconfigured client must never take down the whole run.
     try {
       const sendHour = numOr(seq.send_hour, 10)
+      let clientSends = perClientBudget
 
       // 1) Expire stale open carts for this client (stop chasing dead carts).
       const expiryStart = new Date(nowMs - numOr(seq.expiry_days, 14) * DAY_MS).toISOString()
@@ -370,20 +608,32 @@ export async function runCartAbandonmentTick(
         .select('id')
       expired += expiredRows?.length || 0
 
-      // 2) Best-effort Shopify polling fallback (see note above).
-      try { await pollShopifyAbandonedCarts(clientId) } catch (e) {
-        console.error('[cart tick] shopify poll failed', { clientId, e: String(e) })
-      }
-
-      // 3) WhatsApp must be connected to send anything.
-      const config = await getWAConfig(clientId)
-      if (!config) continue
-
-      // 4) Load this client's steps once.
+      // 2) Load this client's steps once — used by both the poll and the sends.
       const { data: steps } = await sb.from('cart_sequence_steps')
         .select('*').eq('client_id', clientId).order('step_no', { ascending: true })
+      const stepRows = steps || []
       const stepByNo: Record<number, any> = {}
-      ;(steps || []).forEach(s => { stepByNo[s.step_no] = s })
+      stepRows.forEach(s => { stepByNo[s.step_no] = s })
+
+      // 3) Best-effort Shopify polling fallback (see note above). Budgeted, and
+      //    it reuses the context loaded at (2) instead of re-querying per cart.
+      if (pollBudget > 0) {
+        try {
+          const n = await pollShopifyAbandonedCarts(
+            clientId,
+            { seq, steps: stepRows },
+            Math.min(perClientPoll, pollBudget)
+          )
+          polled += n
+          pollBudget -= n
+        } catch (e) {
+          console.error('[cart tick] shopify poll failed', { clientId, e: String(e) })
+        }
+      }
+
+      // 4) WhatsApp must be connected to send anything.
+      const config = await getWAConfig(clientId)
+      if (!config) continue
 
       // 5) Templates. Keyed by name|language so the same template name in two
       //    languages can't collide (last-write-wins previously picked at random).
@@ -410,8 +660,17 @@ export async function runCartAbandonmentTick(
         .order('next_step_at', { ascending: true })
         .limit(MAX_DUE_CARTS_PER_CLIENT)
 
+      // Push a cart to the next send hour without burning its step.
+      const holdCart = async (cartId: string) => {
+        held++
+        await sb.from('abandoned_carts').update({
+          next_step_at: nextSendInstant(nowIso, 1, sendHour),
+          updated_at: nowIso,
+        }).eq('id', cartId)
+      }
+
       for (const cart of dueCarts || []) {
-        if (sendBudget <= 0) { capped = true; break }
+        if (sendBudget <= 0 || clientSends <= 0) { capped = true; break }
         processed++
 
         // CLAIM the cart before sending: a conditional update that only matches
@@ -431,6 +690,8 @@ export async function runCartAbandonmentTick(
 
         // Step permanently missing or explicitly disabled → skip forward so the
         // sequence doesn't stall; try the next step on its own schedule.
+        // (H5: recovery credit is read from cart_messages, so advancing
+        // last_step_sent here no longer inflates per-message revenue.)
         if (!step || step.enabled === false) {
           const nextStep = stepByNo[stepNo + 1]
           const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
@@ -449,11 +710,8 @@ export async function runCartAbandonmentTick(
         const tmpl = tmplByKey[`${step.template_name}|${step.language || 'en'}`]
           || tmplByName[step.template_name]
         if (!tmpl || tmpl.status !== 'APPROVED') {
-          held++
-          await sb.from('abandoned_carts').update({
-            next_step_at: nextSendInstant(nowIso, 1, sendHour),
-            updated_at: nowIso,
-          }).eq('id', cart.id)
+          warnings.add(`Template "${step.template_name}" is not APPROVED — messages are being held. If Meta has already approved it, run a template sync (WhatsApp → Templates → Sync).`)
+          await holdCart(cart.id)
           continue
         }
 
@@ -462,7 +720,7 @@ export async function runCartAbandonmentTick(
         // shopper to THEIR OWN cart's recovery_url (Shopify checkout resume),
         // via the /discount session URL when the step carries a coupon.
         const cartSlug = `${step.tracking_slug}.${cart.id}`
-        const trackingLink = `${base}/r/${cartSlug}`
+        const trackingLink = baseOk ? `${base}/r/${cartSlug}` : ''
         const varMap = step.variable_map || {}
         const variables: string[] = []
         let linkInBody = false
@@ -482,6 +740,14 @@ export async function runCartAbandonmentTick(
           if (!variables[i].trim()) variables[i] = ' '
         }
 
+        // M1: the body wants a link and we have no public origin to build one.
+        // Sending would put "/r/…" in front of a customer AND bill us for it.
+        if (linkInBody && !baseOk) {
+          console.error('[cart tick] no BASE_URL — holding body-link send', { clientId, step: stepNo })
+          await holdCart(cart.id)
+          continue
+        }
+
         // Where does the shopper's link actually live? Two valid answers:
         //   a) a DYNAMIC url button — base url ending in {{1}}, param = slug
         //   b) the message body — the `__link__` variable, full URL
@@ -495,18 +761,16 @@ export async function runCartAbandonmentTick(
         // way back to their cart, and we'd still be billed for it. Hold instead,
         // so the brand can fix the mapping; expiry_days caps the wait.
         if (urlButtonIndex < 0 && !linkInBody) {
-          held++
           console.error('[cart tick] no link route on template', {
             clientId, step: stepNo, template: step.template_name,
           })
-          await sb.from('abandoned_carts').update({
-            next_step_at: nextSendInstant(nowIso, 1, sendHour),
-            updated_at: nowIso,
-          }).eq('id', cart.id)
+          warnings.add(`Template "${step.template_name}" has no dynamic URL button and no {{n}} mapped to the tracking link, so the shopper would have no way back to their cart. Map a variable to "Tracking link", or re-sync templates if the button was added on Meta.`)
+          await holdCart(cart.id)
           continue
         }
 
         sendBudget--
+        clientSends--
         const result = await sendTemplateMessage(config, {
           to: cart.phone,
           templateName: step.template_name,
@@ -518,10 +782,11 @@ export async function runCartAbandonmentTick(
 
         if ('error' in result) {
           failed++
-          await sb.from('cart_messages').insert({
+          const { error: logErr } = await sb.from('cart_messages').insert({
             cart_id: cart.id, client_id: clientId, step_no: stepNo,
             phone: cart.phone, status: 'failed', error_message: result.error,
           })
+          if (logErr) console.error('[cart tick] failed to log failed send', logErr.message)
           // Retry this same step at the next send hour rather than skipping it.
           await sb.from('abandoned_carts').update({
             next_step_at: nextSendInstant(nowIso, 1, sendHour),
@@ -531,9 +796,15 @@ export async function runCartAbandonmentTick(
         }
 
         sent++
-        await sb.from('cart_messages').insert({
+        // M5/H5: this row is the source of truth for "which message actually
+        // reached the shopper", both for the funnel and for recovery credit —
+        // so a write failure here has to be visible, not swallowed.
+        const { error: logErr } = await sb.from('cart_messages').insert({
           cart_id: cart.id, client_id: clientId, step_no: stepNo,
           wa_message_id: result.wa_message_id, phone: cart.phone, status: 'sent',
+        })
+        if (logErr) console.error('[cart tick] failed to log sent message', {
+          clientId, cartId: cart.id, step: stepNo, error: logErr.message,
         })
 
         // Advance: schedule the next enabled step, or complete after step 3.
@@ -552,7 +823,7 @@ export async function runCartAbandonmentTick(
     }
   }
 
-  return { processed, sent, failed, expired, held, capped }
+  return { processed, sent, failed, expired, held, polled, capped, warnings: Array.from(warnings) }
 }
 
 // ── KPIs: the funnel + total revenue generated by this activity ──────────────
@@ -565,6 +836,10 @@ export interface CartStats {
   totalRevenue: number            // ⭐ revenue attributable to this activity (steps 1-3)
   organicRevenue: number          // recovered_by_step = 0
   recoveryRate: string            // recovered / detected, %
+  /** Carts we hold no phone for — detected, but never messageable. */
+  unreachable: number
+  /** True when the cohort was too large to count per-step sends exactly. */
+  sentApproximate: boolean
   steps: {
     step: number
     sent: number
@@ -590,14 +865,17 @@ export async function getCartAbandonmentStats(clientId: string, month?: string):
 
   const rows = await pageAll<any>((from, to) => {
     let q = sb.from('abandoned_carts')
-      .select('status, opted_in, recovered_by_step, recovered_value')
+      .select('id, phone, status, opted_in, recovered_by_step, recovered_value')
       .eq('client_id', clientId).order('abandoned_at', { ascending: true }).range(from, to)
     if (start && end) q = q.gte('abandoned_at', start).lt('abandoned_at', end)
     return q
   })
 
   const detected = rows.length
-  const messageable = rows.filter(r => r.opted_in).length
+  // M2: email-only carts are now stored, so "messageable" has to mean
+  // reachable AND consented, not just consented.
+  const messageable = rows.filter(r => r.opted_in && r.phone).length
+  const unreachable = rows.filter(r => !r.phone).length
   const recoveredRows = rows.filter(r => r.status === 'recovered')
   const recovered = recoveredRows.length
   const byMsg = recoveredRows.filter(r => (r.recovered_by_step ?? 0) >= 1)
@@ -608,18 +886,25 @@ export async function getCartAbandonmentStats(clientId: string, month?: string):
     .filter(r => (r.recovered_by_step ?? 0) === 0)
     .reduce((s, r) => s + (Number(r.recovered_value) || 0), 0)
 
-  // Per-step "sent" from the message log (accurate even after a cart moves on);
-  // "recovered"/"revenue" from recovered_by_step on the cart. Also paginated.
-  const msgs = await pageAll<any>((from, to) => {
-    let q = sb.from('cart_messages').select('step_no, status')
-      .eq('client_id', clientId).order('created_at', { ascending: true }).range(from, to)
-    if (start && end) q = q.gte('created_at', start).lt('created_at', end)
-    return q
-  })
+  // M7: per-step "sent" counted for THIS COHORT's carts. The old version
+  // filtered cart_messages by created_at, so a message sent on 1 Aug for a cart
+  // abandoned on 30 Jul landed in the wrong month and the per-step recovery
+  // rates compared two different populations.
   const sentByStep: Record<number, number> = { 1: 0, 2: 0, 3: 0 }
-  msgs.forEach(m => {
-    if (m.status !== 'failed') sentByStep[m.step_no] = (sentByStep[m.step_no] || 0) + 1
-  })
+  const ids = rows.map(r => r.id)
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += STATS_COHORT_CHUNK) {
+    chunks.push(ids.slice(i, i + STATS_COHORT_CHUNK))
+  }
+  const usable = chunks.slice(0, STATS_MAX_COHORT_CHUNKS)
+  const sentApproximate = chunks.length > usable.length
+  for (const chunk of usable) {
+    const { data } = await sb.from('cart_messages')
+      .select('step_no, status').in('cart_id', chunk)
+    for (const m of data || []) {
+      if (m.status !== 'failed') sentByStep[m.step_no] = (sentByStep[m.step_no] || 0) + 1
+    }
+  }
 
   const steps = [1, 2, 3].map(n => {
     const recoveredN = byMsg.filter(r => r.recovered_by_step === n)
@@ -643,6 +928,8 @@ export async function getCartAbandonmentStats(clientId: string, month?: string):
     totalRevenue,
     organicRevenue,
     recoveryRate: detected > 0 ? ((recovered / detected) * 100).toFixed(1) : '0',
+    unreachable,
+    sentApproximate,
     steps,
   }
 }
