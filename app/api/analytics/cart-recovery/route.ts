@@ -10,6 +10,7 @@
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
+import { getSupabaseAdmin } from '@/lib/supabase'
 import { getCartAbandonmentStats } from '@/lib/cart-abandonment'
 
 export async function GET(request: NextRequest) {
@@ -22,6 +23,24 @@ export async function GET(request: NextRequest) {
   if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
   if (role === 'client' && clientId !== userId) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+
+  // The previous check covered `client` only, so ANY authenticated agency could
+  // pass an arbitrary ?clientId= and read another brand's recovered revenue.
+  // (The same gap exists in analytics/overview and analytics/partners — it is
+  // platform-wide, not specific to this route — but this endpoint returns
+  // money, so it is closed here.) An agency may only read brands it handles.
+  if (role === 'agency') {
+    const sb = getSupabaseAdmin()
+    const { data: handled } = await sb
+      .from('agency_handlers')
+      .select('client_id')
+      .eq('agency_id', userId)
+      .eq('client_id', clientId)
+      .limit(1)
+    if (!handled || handled.length === 0) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
   }
 
   const s = await getCartAbandonmentStats(clientId, month)
