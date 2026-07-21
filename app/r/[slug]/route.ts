@@ -1,10 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  app/r/[slug]/route.ts                                          │
-// │                                                                            │
-// │ The click redirect. Every tracking link in the product lands here:         │
-// │ influencer links, affiliate links, WhatsApp broadcast links, and           │
-// │ cart-recovery links. Resolves the slug, sends the visitor where they       │
-// │ should go, and logs the click in the background.                           │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
@@ -38,6 +33,33 @@ function safeAbsolute(dest: string, base: string): string {
   if (!dest) return b
   try { return new URL(dest).toString() } catch { /* relative — resolve below */ }
   try { return new URL(dest, b).toString() } catch { return b }
+}
+
+// Tag a cart-recovery destination so the brand's OWN analytics (GA4, Shopify
+// reports) credits the session to the abandonment sequence rather than filing
+// it under direct traffic. The destination is the shopper's stored
+// `recovery_url` — i.e. their own store address, captured at intake — so the
+// UTMs go straight onto it here rather than being baked into the message.
+//
+// Existing query params are never overwritten: if the recovery URL already
+// carries a utm_source the store put there deliberately, that wins.
+function withCartUtm(dest: string, stepNo: number | null): string {
+  try {
+    const u = new URL(dest)
+    const tags: Record<string, string> = {
+      utm_source: 'korant',
+      utm_medium: 'whatsapp',
+      utm_campaign: 'cart_recovery',
+    }
+    if (stepNo) tags.utm_content = `message_${stepNo}`
+    for (const [k, v] of Object.entries(tags)) {
+      if (!u.searchParams.has(k)) u.searchParams.set(k, v)
+    }
+    return u.toString()
+  } catch {
+    // Relative or malformed — safeAbsolute() deals with it downstream.
+    return dest
+  }
 }
 
 // Route a code-bearing click through Shopify's /discount/<code> URL. Shopify
@@ -97,6 +119,12 @@ export async function GET(
   }
   // Still nothing? Send them to the storefront rather than a dead end.
   if (!baseDest && link?.shopDomain) baseDest = `https://${link.shopDomain}`
+
+  // Tag BEFORE the /discount wrapper below — that one puts the destination
+  // inside `?redirect=`, so anything appended afterwards would be lost.
+  if (link?.found && link.channel === 'cart' && baseDest) {
+    baseDest = withCartUtm(baseDest, link.cartStepNo)
+  }
 
   const destUrl = (link?.found && link.discountCode && link.shopDomain)
     ? buildShopifyDiscountUrl(baseDest, link.discountCode, link.shopDomain)
