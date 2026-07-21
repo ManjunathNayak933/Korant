@@ -3,15 +3,7 @@ import { getSupabaseAdmin } from './supabase'
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/shopify.ts                                                 │
 // │                                                                            │
-// │ Shopify Admin GraphQL API. Discounts, webhooks, and abandoned-checkout     │
-// │ polling all go through GraphQL — the REST Admin API is legacy (Oct 2024)   │
-// │ and new public apps must be GraphQL-only since April 2025.                 │
-// │                                                                            │
-// │ NOTE: the `shopify_price_rule_id` column (bigint) stores the numeric part  │
-// │ of the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>).         │
-// │ Function names are kept for interface stability with existing callers.     │
-// │                                                                            │
-// │ ── Fixes in this revision ────────────────────────────────────────────────│
+// │ ── Fixes in this revision ──────────────────────────────────────────────── │
 // │ H3  fetchShopifyAbandonedCheckouts() reported optedIn = false whenever it  │
 // │     could not SEE a consent field — guest checkouts (no customer node)     │
 // │     and the minimal fallback query. The cart intake wrote that over carts  │
@@ -312,6 +304,20 @@ export async function registerShopifyCheckoutWebhooks(
 
 export interface PolledAbandonedCheckout {
   externalId: string
+  /**
+   * P2c: the checkout's numeric Shopify id, ALWAYS present. `externalId` is
+   * derived from the recovery URL, which on Checkout Extensibility stores is
+   * the `cn` token — a DIFFERENT value from the REST `checkout.token` the
+   * CHECKOUTS_* webhook stores as external_id, and from the
+   * `order.checkout_token` the order webhook matches on. That mismatch means
+   * the poll and the webhook create two rows for one checkout (the unique
+   * index can't help — the ids genuinely differ), and a poll-only cart never
+   * exact-matches its order. Carrying the numeric id lets the caller dedupe on
+   * something both sides agree about.
+   */
+  checkoutId: string | null
+  /** When Shopify says the checkout was created. Used as abandoned_at. */
+  createdAt: string | null
   phone: string | null
   email: string | null
   name: string | null
@@ -401,8 +407,11 @@ export async function fetchShopifyAbandonedCheckouts(
     // WhatsApp opt-in ≈ SMS channel consent. STRICT boolean on the enum state —
     // never truthiness of the consent object (that bug opted in decliners).
     const optedIn = String(cust?.smsMarketingConsent?.marketingState || '').toUpperCase() === 'SUBSCRIBED'
+    const numericId = gidToNumericId(n.id)
     return {
-      externalId: tokenFromRecoveryUrl(n.abandonedCheckoutUrl) || gidToNumericId(n.id).toString(),
+      externalId: tokenFromRecoveryUrl(n.abandonedCheckoutUrl) || String(numericId),
+      checkoutId: numericId ? String(numericId) : null,
+      createdAt: n.createdAt || null,
       phone,
       email: cust?.email || null,
       name: cust?.firstName ? `${cust.firstName} ${cust.lastName || ''}`.trim() : (n.billingAddress?.name || null),
