@@ -23,7 +23,8 @@ export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import {
-  getWAConfig, syncTemplatesFromMeta, submitTemplate, buttonConfigFor, type TemplateDraft,
+  getWAConfig, syncTemplatesFromMeta, submitTemplate, buttonConfigFor,
+  countTemplateVariables, type TemplateDraft,
 } from '@/lib/whatsapp'
 
 export const dynamic = 'force-dynamic'
@@ -79,8 +80,13 @@ export async function POST(request: NextRequest) {
   // at send time to locate the dynamic URL button.
   const buttonConfig = buttonConfigFor(draft)
 
-  // Save to DB first
-  const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
+  // Save to DB first.
+  // P2a: this used to be `.match(...).length` — the number of PLACEHOLDER
+  // OCCURRENCES, not the number of variables. A body repeating {{1}} stored a
+  // count one too high, the sender then built too many parameters, and Meta
+  // rejected every send of that template with 132000. Meta indexes body
+  // parameters positionally, so the max index is the correct figure.
+  const varCount = countTemplateVariables(bodyText)
   const { data: tmpl, error } = await sb
     .from('whatsapp_templates')
     .insert({
