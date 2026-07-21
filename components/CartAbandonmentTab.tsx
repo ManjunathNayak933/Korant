@@ -8,10 +8,15 @@
 // │ (2) the sequence builder — up to 3 steps, each with an approved template,   │
 // │ a days delay, an optional coupon, and its own tracking link.               │
 // │                                                                            │
-// │ Fixes: load() is wrapped (a failed request used to leave the tab stuck on  │
-// │ "Loading…" forever); the free-text timezone input is gone (an invalid IANA │
-// │ name crashed the intake webhook and the whole cron run) — everything is    │
-// │ IST; and 0 is now a real, storable value for delay/hour.                   │
+// │ ── Fixes in this revision ────────────────────────────────────────────────│
+// │ M8  Each saved step now round-trips its row `id`. Steps used to be matched │
+// │     to their saved row by POSITION, so deleting message 1 made message 2   │
+// │     become step 1 and inherit step 1's tracking link — links already in    │
+// │     customers' WhatsApp started resolving to a different message's coupon. │
+// │ +   Surfaces "unreachable" carts (detected but no phone), flags when the   │
+// │     per-message "sent" figures are approximated on a very large month,     │
+// │     and warns when BASE_URL isn't configured (tracking links would ship    │
+// │     to shoppers as a relative path).                                       │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { useState, useEffect } from 'react'
 
@@ -19,6 +24,7 @@ interface Template {
   id: string; template_name: string; status: string; variable_count: number; language: string
 }
 interface Step {
+  id?: string                     // cart_sequence_steps.id — stable identity
   step_no?: number; enabled?: boolean; delay_days?: number
   template_id?: string; template_name?: string; language?: string
   variable_map?: Record<string, string>; coupon_code?: string | null
@@ -48,6 +54,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
   const [expiryDays, setExpiryDays] = useState(14)
   const [steps, setSteps] = useState<Step[]>([])
   const [stats, setStats] = useState<any>(null)
+  const [baseUrlOk, setBaseUrlOk] = useState(true)
 
   // Treat 0 as a real value. `x ?? d` (not `x || d`) throughout, so a saved
   // send hour of 00:00 or a delay of 0 days round-trips instead of snapping
@@ -69,6 +76,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
       setSendHour(numOr(seq.sequence?.send_hour, 10))
       setExpiryDays(numOr(seq.sequence?.expiry_days, 14))
       setSteps((seq.steps || []).map((s: any) => ({ ...s })))
+      setBaseUrlOk(seq.base_url_configured !== false)
 
       // Stats are secondary — a failure there shouldn't hide the builder.
       if (statsRes.ok) {
@@ -121,6 +129,9 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
         body: JSON.stringify({
           enabled, send_hour: sendHour, expiry_days: expiryDays,
           steps: steps.map((s, i) => ({
+            // M8: `id` is what ties this message to its saved row (and to its
+            // tracking link) no matter which position it now sits in.
+            id: s.id,
             step_no: i + 1, enabled: s.enabled !== false, delay_days: numOr(s.delay_days, 1),
             template_id: s.template_id, template_name: s.template_name, language: s.language || 'en',
             variable_map: s.variable_map || {}, coupon_code: s.coupon_code || null,
@@ -160,10 +171,14 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
       {/* ── Top-line KPIs ── */}
       {(() => {
         const kpis = [
-          { label: 'Carts detected', value: (stats?.detected || 0).toLocaleString('en-IN'), color: 'var(--text-primary)', sub: null as string | null },
+          {
+            label: 'Carts detected', value: (stats?.detected || 0).toLocaleString('en-IN'),
+            color: 'var(--text-primary)',
+            sub: stats?.unreachable ? `${stats.unreachable} without a phone` : null,
+          },
           { label: 'Messageable', value: (stats?.messageable || 0).toLocaleString('en-IN'), color: '#53bdeb', sub: 'opted in' },
           { label: 'Recovered', value: (stats?.recovered || 0).toLocaleString('en-IN'), color: 'var(--green)', sub: `${stats?.recoveryRate || 0}%` },
-          { label: 'By message', value: (stats?.recoveredByMessage || 0).toLocaleString('en-IN'), color: 'var(--amber)', sub: null },
+          { label: 'By message', value: (stats?.recoveredByMessage || 0).toLocaleString('en-IN'), color: 'var(--amber)', sub: null as string | null },
         ]
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', marginBottom: 22, marginLeft: -24, marginRight: -24, borderTop: '0.5px solid var(--border)', borderBottom: '0.5px solid var(--border)' }}>
@@ -180,7 +195,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
 
       {/* ── Per-message funnel ── */}
       <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', marginBottom: 10 }}>Which message brought them back</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 30 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: stats?.sentApproximate ? 8 : 30 }}>
         {(stats?.steps || [1, 2, 3].map((n: number) => ({ step: n, sent: 0, recovered: 0, revenue: 0, recoveryRate: '0' }))).map((st: any) => (
           <div key={st.step} style={{ border: '0.5px solid var(--border)', borderRadius: 9, padding: '14px 16px' }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 10 }}>Message {st.step}</div>
@@ -196,6 +211,11 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
           </div>
         ))}
       </div>
+      {stats?.sentApproximate && (
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 22 }}>
+          Very large month — “Sent” is counted across the first 3,000 carts, so per-message rates are approximate. Recovered and revenue are exact.
+        </div>
+      )}
 
       {/* ── Sequence builder ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
@@ -205,6 +225,12 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
           {enabled ? <span style={{ color: 'var(--green)' }}>Active</span> : 'Paused'}
         </label>
       </div>
+
+      {!baseUrlOk && (
+        <div style={{ fontSize: 11, color: 'var(--amber)', border: '0.5px solid var(--amber)', borderRadius: 8, padding: '10px 12px', marginBottom: 14 }}>
+          This deployment has no public base URL configured, so tracking links can’t be built. Messages that carry the link in the message body will be held until <code>BASE_URL</code> is set in the Cloudflare Pages environment.
+        </div>
+      )}
 
       {/* schedule controls — all times are IST */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8, alignItems: 'flex-end' }}>
@@ -234,7 +260,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
         const t = approved.find(x => x.template_name === s.template_name)
         const varCount = t?.variable_count || 0
         return (
-          <div key={i} style={{ border: '0.5px solid var(--border)', borderRadius: 9, padding: 16, marginBottom: 12, opacity: s.enabled === false ? 0.55 : 1 }}>
+          <div key={s.id || `new-${i}`} style={{ border: '0.5px solid var(--border)', borderRadius: 9, padding: 16, marginBottom: 12, opacity: s.enabled === false ? 0.55 : 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>Message {i + 1}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -255,7 +281,7 @@ export default function CartAbandonmentTab({ templates, month }: Props) {
                   {approved.map(t => <option key={t.id} value={t.template_name}>{t.template_name}</option>)}
                 </select>
                 {approved.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>No approved templates yet — create one in the Templates tab and wait for Meta approval. Carts abandoned meanwhile are held, not skipped.</div>
+                  <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>No approved templates yet — create one in the Templates tab, wait for Meta approval, then hit Sync there. Carts abandoned meanwhile are held, not skipped.</div>
                 )}
               </div>
               <div style={{ width: 130 }}>
