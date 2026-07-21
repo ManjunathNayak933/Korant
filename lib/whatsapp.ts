@@ -1,30 +1,36 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/whatsapp.ts                                            │
-// │                                                                        │
-// │ WhatsApp Business Cloud API (Meta Graph API).                          │
-// │                                                                        │
-// │ ── Fixes in this revision ──────────────────────────────────────────── │
-// │ B2  syncTemplatesFromMeta() upserted with                              │
-// │     onConflict: 'client_id,template_name,language'. That unique index  │
-// │     does not exist in the live schema, so Postgres raised 42P10 on     │
-// │     EVERY row — and the result was never inspected, so the function    │
-// │     reported "synced N" while writing nothing. No template ever        │
-// │     reached APPROVED locally, so the cart tick held every message      │
-// │     forever and the Cart Abandonment template dropdown stayed empty.   │
-// │     The write is now checked, falls back to select→update→insert when  │
-// │     the index is missing, and throws with an actionable message if a   │
-// │     row genuinely fails.                                                │
-// │ B3  buildTemplateComponents() is exported so the create-template route │
-// │     can persist the SAME `button_config` it submits to Meta. Without   │
-// │     it, findDynamicUrlButtonIndex() returned -1 for every locally      │
-// │     created template and the tick held the send with "no link route".  │
-// │ M5  sendTemplateMessage() returned { wa_message_id: '' } when Meta's   │
-// │     response didn't carry a message id. That counted as a success,     │
-// │     wrote an empty string into a UNIQUE column (so the second one      │
-// │     silently failed with 23505), and left a message that could never   │
-// │     receive a delivery/read callback. A missing id is now an error.    │
+// │ ── Fixes in THIS revision ──────────────────────────────────────────── │
+// │ P2a variable_count counted OCCURRENCES of {{n}}, not distinct          │
+// │     variables. A body reading "Hi {{1}}, your {{2}} is waiting — see   │
+// │     you soon {{1}}" stored 3, so the sender built three parameters for │
+// │     a two-parameter template and Meta rejected EVERY send with 132000  │
+// │     "number of parameters does not match". The cart tick treats that   │
+// │     as retry-tomorrow, so the step failed silently once a day until    │
+// │     the cart expired. It is now the MAX INDEX, which is what Meta      │
+// │     actually requires (a body using only {{2}} still needs two).       │
+// │ P2b sendTemplateMessage() never built a HEADER component, but the      │
+// │     schema stores header_type/header_media_id/header_media_url and     │
+// │     buildTemplateComponents() happily submits IMAGE/VIDEO/DOCUMENT     │
+// │     headers to Meta. Any media-headed template — i.e. nearly every     │
+// │     cart-recovery template — was rejected 100% of the time with        │
+// │     "parameters missing".                                              │
 // └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
+
+// Meta indexes template body parameters POSITIONALLY: a body that only uses
+// {{2}} still has to be sent two parameters. So the count we need is the
+// HIGHEST index present, not how many placeholders appear.
+//
+// Note this deliberately handles numeric placeholders only. Meta also supports
+// NAMED parameters ({{order_id}}); if you start accepting those, they need a
+// separate code path — they are not positional and cannot be counted this way.
+export function countTemplateVariables(bodyText: string | null | undefined): number {
+  const idxs = [...String(bodyText || '').matchAll(/\{\{\s*(\d+)\s*\}\}/g)]
+    .map(m => Number(m[1]))
+    .filter(n => Number.isFinite(n) && n > 0)
+  return idxs.length ? Math.max(...idxs) : 0
+}
 
 // Graph API versions stay supported ~2 years; override per-deploy if needed.
 const META_VERSION = process.env.WHATSAPP_GRAPH_VERSION || 'v25.0'
@@ -125,7 +131,7 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig):
       const footerComp = t.components?.find((c: any) => c.type === 'FOOTER')
       const buttonComp = t.components?.find((c: any) => c.type === 'BUTTONS')
       const bodyText = bodyComp?.text || ''
-      const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
+      const varCount = countTemplateVariables(bodyText)
 
       const result = await saveTemplateRow({
         client_id: clientId,
@@ -292,6 +298,17 @@ export interface SendMessageParams {
   urlButtonIndex?: number
   /** @deprecated use urlButtonIndex */
   hasButtons?: boolean
+  /**
+   * P2b: a template whose HEADER is IMAGE / VIDEO / DOCUMENT requires a header
+   * component carrying the media on EVERY send — Meta rejects the message
+   * outright without it ("parameters missing"). TEXT headers with no variables
+   * need nothing, which is why this was never noticed on text-only templates.
+   * Pass the row's header_type plus whichever of media_id / media_url you hold;
+   * the id is preferred (it's the handle Meta already has).
+   */
+  headerType?: string | null
+  headerMediaId?: string | null
+  headerMediaUrl?: string | null
 }
 
 export async function sendTemplateMessage(
@@ -304,6 +321,25 @@ export async function sendTemplateMessage(
   const bodyParams = params.variables.map(v => ({ type: 'text', text: v }))
 
   const components: any[] = []
+
+  // P2b: media header. Must come FIRST in the components array — Meta matches
+  // components to the template's own component order.
+  const headerType = String(params.headerType || '').toUpperCase()
+  if (headerType && headerType !== 'TEXT') {
+    const kind = headerType.toLowerCase() // image | video | document
+    if (['image', 'video', 'document'].includes(kind)) {
+      const media = params.headerMediaId
+        ? { id: params.headerMediaId }
+        : (params.headerMediaUrl ? { link: params.headerMediaUrl } : null)
+      // No media at all → don't send a malformed header component; Meta would
+      // reject it. Fail loudly instead of shipping a message that can't render.
+      if (!media) {
+        return { error: `Template "${params.templateName}" has a ${kind} header but no stored media id or url. Re-sync templates (WhatsApp → Templates → Sync) so the header handle is captured.` }
+      }
+      components.push({ type: 'header', parameters: [{ type: kind, [kind]: media }] })
+    }
+  }
+
   if (bodyParams.length > 0) {
     components.push({ type: 'body', parameters: bodyParams })
   }
