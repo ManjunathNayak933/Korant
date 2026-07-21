@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
-import { recoverCartsForOrder } from '@/lib/cart-abandonment'
+import { recoverCartsForOrder, reverseCartRecovery } from '@/lib/cart-abandonment'
 
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -52,8 +52,13 @@ export async function POST(request: NextRequest) {
   if (payload.event === 'refund.created' || payload.event === 'refund.processed') {
     const paymentId = payload.payload?.refund?.entity?.payment_id
     if (!paymentId) return NextResponse.json({ received: true, skipped: true })
-    const r = await reverseSale({ clientId, orderId: String(paymentId), platform: 'razorpay', reason: 'refund' })
-    return NextResponse.json({ received: true, reversed: r.reversed })
+    // reverseSale() only writes to `events`; the cart recovery needs undoing
+    // too or its revenue stays on the Cart Abandonment tab forever.
+    const [r, c] = await Promise.all([
+      reverseSale({ clientId, orderId: String(paymentId), platform: 'razorpay', reason: 'refund' }),
+      reverseCartRecovery({ clientId, orderId: String(paymentId) }),
+    ])
+    return NextResponse.json({ received: true, reversed: r.reversed, cartsReversed: c.reversed })
   }
 
   if (payload.event !== 'payment.captured') {
