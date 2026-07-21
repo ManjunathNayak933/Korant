@@ -13,6 +13,19 @@
 // │ the cart. Both paths dedupe on the checkout token via external_id.         │
 // │                                                                            │
 // │ Public via middleware's `/api/webhook/` prefix.                            │
+// │                                                                            │
+// │ ── Fix in this revision (M3) ─────────────────────────────────────────────│
+// │ `buyer_accepts_marketing` was treated as consent to send a WhatsApp        │
+// │ marketing template. That flag is EMAIL marketing consent — it is not       │
+// │ permission to message someone on WhatsApp, which is exactly the class of   │
+// │ bug this file's previous fix (the sms_marketing_consent object) closed.    │
+// │ Under Meta's WhatsApp Business policy the opt-in has to be for THIS        │
+// │ channel, and under the DPDP Act consent is purpose-bound. Only an explicit │
+// │ SMS/WhatsApp subscription now counts.                                      │
+// │                                                                            │
+// │ If you collect a WhatsApp opt-in checkbox at checkout, pass it through as  │
+// │ a cart attribute named `whatsapp_opt_in` (or `wa_opt_in`) — it is read     │
+// │ below. Fully custom checkouts should POST to /api/webhook/cart instead.    │
 // └──────────────────────────────────────────────────────────────────────────┘
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
@@ -25,13 +38,48 @@ import { intakeAbandonedCart } from '@/lib/cart-abandonment'
 //   { state: 'not_subscribed', opt_in_level: 'single_opt_in', ... }
 // The old check was `!!checkout.sms_marketing_consent`, which is TRUE for a
 // shopper who explicitly declined — so decliners were stored opted_in and
-// messaged. That's a Meta WhatsApp policy breach and a DPDP Act problem in
-// India. Only an explicit SUBSCRIBED state counts.
+// messaged. Only an explicit SUBSCRIBED state counts.
 function hasMarketingConsent(consent: any): boolean {
   if (consent === true) return true
   if (!consent || typeof consent !== 'object') return false
   const state = String(consent.state ?? consent.marketing_state ?? consent.marketingState ?? '')
   return state.toLowerCase() === 'subscribed'
+}
+
+function truthy(v: unknown): boolean {
+  return ['true', '1', 'yes', 'y', 'on'].includes(String(v ?? '').trim().toLowerCase())
+}
+
+/**
+ * Resolve WhatsApp/SMS-channel consent from a checkout payload.
+ *
+ * `known` distinguishes "the shopper declined" from "this payload carried no
+ * consent field at all". intakeAbandonedCart only writes opted_in when the
+ * source could actually observe it — otherwise a payload missing the field
+ * would silently un-subscribe a cart another source correctly opted in.
+ */
+function readChannelConsent(checkout: any): { optedIn: boolean; known: boolean } {
+  // 1) An explicit WhatsApp opt-in passed through as a cart/checkout attribute.
+  const attrs: Record<string, any> = {}
+  for (const a of (checkout.note_attributes || checkout.attributes || [])) {
+    if (a && a.name != null) attrs[String(a.name).toLowerCase()] = a.value
+  }
+  for (const key of ['whatsapp_opt_in', 'wa_opt_in', 'whatsapp_optin']) {
+    if (attrs[key] !== undefined) return { optedIn: truthy(attrs[key]), known: true }
+  }
+
+  // 2) Shopify's SMS-channel consent (the closest native equivalent).
+  const candidates = [checkout.sms_marketing_consent, checkout.customer?.sms_marketing_consent]
+  let known = false
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue
+    known = true
+    if (hasMarketingConsent(c)) return { optedIn: true, known: true }
+  }
+
+  // NOTE: checkout.buyer_accepts_marketing is deliberately NOT consulted — it
+  // is email consent and does not authorise a WhatsApp template.
+  return { optedIn: false, known }
 }
 
 export async function POST(request: NextRequest) {
@@ -80,10 +128,7 @@ export async function POST(request: NextRequest) {
   // A logged-in customer means we knew them before checkout; otherwise this is
   // a checkout-entered identity.
   const identitySource = checkout.customer?.id ? 'logged_in' : 'checkout'
-  const optedIn =
-    checkout.buyer_accepts_marketing === true
-    || hasMarketingConsent(checkout.sms_marketing_consent)
-    || hasMarketingConsent(checkout.customer?.sms_marketing_consent)
+  const consent = readChannelConsent(checkout)
 
   const result = await intakeAbandonedCart({
     clientId: client.id,
@@ -92,7 +137,8 @@ export async function POST(request: NextRequest) {
     name: checkout.customer?.first_name
       ? `${checkout.customer.first_name} ${checkout.customer.last_name || ''}`.trim()
       : (checkout.billing_address?.name || checkout.shipping_address?.name || null),
-    optedIn,
+    optedIn: consent.optedIn,
+    consentKnown: consent.known,
     identitySource,
     cartValue: parseFloat(checkout.total_price || '0'),
     currency: checkout.currency || checkout.presentment_currency || 'INR',
