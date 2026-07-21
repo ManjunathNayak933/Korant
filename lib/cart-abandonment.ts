@@ -1,27 +1,5 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/cart-abandonment.ts                                       
-// │ ── Fixes in THIS revision ────────────────────────────────────────────────│
-// │ P1a MAX_SENDS_PER_RUN budgeted only SUCCESSFUL SENDS. Held and skipped    │
-// │     carts each cost a claim plus an update and decremented nothing, so a  │
-// │     client with 200 due carts and a pending template did 400 subrequests  │
-// │     while `capped` stayed false — enough clients like that and the        │
-// │     invocation blew Cloudflare's subrequest cap, the per-client catch     │
-// │     swallowed it, and the endpoint reported {ok:true, sent:0}. There is   │
-// │     now a WORK budget, and holds/skips are single atomic statements.      │
-// │ P1b reverseCartRecovery() — refunds and cancellations never un-recovered  │
-// │     a cart, so recovered revenue only ever went up.                       │
-// │ P2a normalizePhone() mangled two real formats: a trunk zero AFTER the     │
-// │     country code ("+91 0 98765…" → 13 digits, never matched), and any     │
-// │     ten-digit foreign number ("+65 6123 4567" → "916561234567").          │
-// │ P2b Media-headed templates could never send: whatsapp_templates stores    │
-// │     header_type/header_media_id but the tick never passed them, so Meta   │
-// │     rejected every image-headed cart template — which is most of them.    │
-// │ P3a intake now accepts the source's real abandonment time. The hourly     │
-// │     poll stamped `now`, shifting the H4 anchor and the expiry clock by up │
-// │     to an hour and bucketing late-night carts into the wrong month.       │
-// │ P3b patchExisting() reported scheduled:true immediately after standing a  │
-// │     cart DOWN — `patch.next_step_at ?? existing.next_step_at` falls       │
-// │     through an explicit null to the old timestamp.                        │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from './whatsapp'
@@ -47,10 +25,19 @@ const CLAIM_LEASE_MS = 2 * 3600000
 // work budget is the send budget times this, so a client whose carts are ALL
 // being held can't quietly consume the whole invocation.
 const WORK_PER_SEND = 4
-// Shopify polling costs ~3 subrequests per checkout. Budget it explicitly so it
-// can never consume the invocation before any message is sent.
-const MAX_POLL_INTAKES_PER_CLIENT = 25
-const MAX_POLL_INTAKES_PER_RUN = 100
+// Shopify polling costs ~2 subrequests per checkout (a dedupe lookup plus one
+// insert/update), plus one GraphQL call per 50-checkout page. Budget it
+// explicitly so it can never consume the invocation before any message is sent.
+//
+// FIX 4: raised from 25/100. The old ceiling was a hard cap on how many carts a
+// brand could EVER capture per hour, and combined with the unsorted single-page
+// query it meant busy stores lost their newest carts permanently. Paging plus
+// the last_polled_at high-water mark makes the work proportional to real
+// volume, so the budget can be higher without risking the subrequest cap:
+// worst case here is 150 x 2 = 300 for polling + 80 x 4 = 320 for sends,
+// leaving comfortable headroom under Cloudflare's 1,000 per invocation.
+const MAX_POLL_INTAKES_PER_CLIENT = 60
+const MAX_POLL_INTAKES_PER_RUN = 150
 // Stats: how many carts we can attribute per-step sends for before the figure
 // degrades to an approximation (150 × 20 = 3,000 carts in the window).
 const STATS_COHORT_CHUNK = 150
@@ -117,15 +104,52 @@ export function normalizePhone(raw: string | null | undefined): string {
 // IST calendar day. If the result is not strictly after base (delay 0 and the
 // hour already passed today), roll to the next day. Pure arithmetic — correct
 // by construction for a fixed-offset zone, verified: 10 → 10:00 IST exactly.
-export function nextSendInstant(baseIso: string, delayDays: number, sendHour: number): string {
-  const base = new Date(baseIso).getTime()
+// ── FIX 2 ────────────────────────────────────────────────────────────────────
+// This used to be anchored ONLY to `base`, so a back-dated intake produced a
+// next_step_at that had ALREADY PASSED. Two ways that happened in production:
+//
+//   • the hourly Shopify poll stamps `abandoned_at` = checkout.createdAt, which
+//     is up to 24h old. With delay_days = 1 the computed slot is in the past,
+//     the cart is due on the very next tick, and the shopper gets a marketing
+//     template at whatever hour that tick runs — 03:00 IST included.
+//   • a cart captured before the sequence went live is scheduled from its
+//     original abandonment when consent/config finally arrives, which can be
+//     days back.
+//
+// `notBeforeIso` is a FLOOR (defaults to now). If the ideal slot has passed we
+// roll forward in WHOLE DAYS, so the send still lands exactly on the brand's
+// IST send hour — just the next occurrence of it.
+export function nextSendInstant(
+  baseIso: string,
+  delayDays: number,
+  sendHour: number,
+  notBeforeIso?: string
+): string {
   const hour = Math.min(23, Math.max(0, Math.trunc(Number(sendHour)))) || 0
+
+  const floorMs = (() => {
+    const t = notBeforeIso ? new Date(notBeforeIso).getTime() : Date.now()
+    return Number.isFinite(t) ? t : Date.now()
+  })()
+
+  // An unparseable base used to make every downstream Date NaN and throw a
+  // RangeError out of toISOString(), killing the whole client in the tick.
+  const parsed = new Date(baseIso).getTime()
+  const base = Number.isFinite(parsed) ? parsed : floorMs
+
   const target = base + Math.max(0, Number(delayDays) || 0) * DAY_MS
 
   // Midnight (00:00 IST) of the target's IST calendar day, as a UTC instant.
   const istDayStart = Math.floor((target + IST_OFFSET_MS) / DAY_MS) * DAY_MS - IST_OFFSET_MS
   let send = istDayStart + hour * 3600000
   if (send <= base) send += DAY_MS
+
+  // Whole-day roll-forward — O(1), and it keeps the send hour intact.
+  if (send <= floorMs) {
+    send += Math.ceil((floorMs - send) / DAY_MS) * DAY_MS
+    if (send <= floorMs) send += DAY_MS
+  }
+
   return new Date(send).toISOString()
 }
 
@@ -266,8 +290,11 @@ export async function intakeAbandonedCart(
   })()
   // H4: the schedule belongs to the ABANDONMENT, not to whenever the latest
   // webhook or poll happened to touch the row.
+  // FIX 2: `nowIso` is the FLOOR. A cart whose ideal slot has already gone by
+  // (polled checkout, or one captured before the sequence went live) lands on
+  // the NEXT send hour instead of firing immediately at an arbitrary hour.
   const scheduleFrom = (abandonedAt: string) =>
-    nextSendInstant(abandonedAt || nowIso, startDelay, sendHour)
+    nextSendInstant(abandonedAt || nowIso, startDelay, sendHour, nowIso)
 
   const items = Array.isArray(input.items) ? input.items : []
   const row: Record<string, any> = {
@@ -616,13 +643,26 @@ export async function reverseCartRecovery(input: {
 // H6: `limit` is a hard budget on how many checkouts this may intake, and the
 // sequence context is passed in so the per-checkout cost is ~2 subrequests
 // instead of ~4.
+//
+// FIX 4: the window is now a HIGH-WATER MARK (cart_sequences.last_polled_at)
+// rather than a flat 24h. A steady-state run only asks Shopify for what changed
+// since the previous tick, so the per-run intake budget covers real volume
+// instead of being spent re-reading the same day of checkouts every hour. The
+// 24h floor still applies on a first run (or after a long outage), and a short
+// overlap absorbs clock skew and checkouts updated mid-tick.
+const POLL_OVERLAP_MS = 30 * 60000
+
 async function pollShopifyAbandonedCarts(
   clientId: string,
   ctx: SequenceContext,
-  limit: number
+  limit: number,
+  lastPolledAt?: string | null
 ): Promise<number> {
   if (limit <= 0) return 0
-  const sinceIso = new Date(Date.now() - DAY_MS).toISOString() // last 24h
+  const floorMs = Date.now() - DAY_MS               // never look further back
+  const markMs = lastPolledAt ? new Date(lastPolledAt).getTime() : NaN
+  const sinceMs = Number.isFinite(markMs) ? Math.max(floorMs, markMs - POLL_OVERLAP_MS) : floorMs
+  const sinceIso = new Date(sinceMs).toISOString()
   const checkouts = await fetchShopifyAbandonedCheckouts(clientId, sinceIso, limit)
   let stored = 0
   for (const c of checkouts) {
@@ -641,11 +681,12 @@ async function pollShopifyAbandonedCarts(
       items: c.items,
       recoveryUrl: c.recoveryUrl,
       source: 'shopify',
+      // FIX 3: `externalId` is now the NUMERIC checkout id — the one value the
+      // CHECKOUTS_* webhook also holds — so both paths key the same row. The
+      // recovery token (`cn` on Checkout Extensibility stores) rides along as
+      // an alternate so rows written by an older build are still matched.
       externalId: c.externalId,
-      // P2c: the poll's id (a `cn` token on Checkout Extensibility stores) is
-      // not the REST checkout.token the webhook stores. Look the cart up under
-      // the numeric checkout id too, so the two paths converge on ONE row.
-      altExternalIds: [c.checkoutId],
+      altExternalIds: [c.checkoutId, c.recoveryToken],
       // The poll runs up to an hour after the fact — date the cart when the
       // shopper actually left, not when we noticed.
       abandonedAt: c.createdAt || null,
@@ -758,10 +799,25 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           const n = await pollShopifyAbandonedCarts(
             clientId,
             { seq, steps: stepRows },
-            Math.min(perClientPoll, pollBudget)
+            Math.min(perClientPoll, pollBudget),
+            // FIX 4: only ask Shopify for what changed since the last tick.
+            // `seq.last_polled_at` is null on databases without the migration —
+            // the poll then falls back to the old 24h window, so this is safe
+            // to ship ahead of the SQL.
+            seq.last_polled_at
           )
           polled += n
           pollBudget -= n
+
+          // Advance the mark even when nothing came back — an empty delta is
+          // still a delta. Best-effort: an older schema rejects the column and
+          // the next run simply re-uses the 24h window.
+          const { error: markErr } = await sb.from('cart_sequences')
+            .update({ last_polled_at: nowIso }).eq('client_id', clientId)
+          if (markErr) {
+            console.warn('[cart tick] could not advance last_polled_at — run the ' +
+              '2026-07-cart-abandonment-fixes migration', markErr.message)
+          }
         } catch (e) {
           console.error('[cart tick] shopify poll failed', { clientId, e: String(e) })
         }
@@ -811,7 +867,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
       const holdCart = async (cart: any) => {
         held++
         await sb.from('abandoned_carts').update({
-          next_step_at: nextSendInstant(nowIso, 1, sendHour),
+          next_step_at: nextSendInstant(nowIso, 1, sendHour, nowIso),
           updated_at: nowIso,
         }).eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
       }
@@ -838,7 +894,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           const nextStep = stepByNo[stepNo + 1]
           const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
           patch.next_step_at = (stepNo < 3 && nextStep && nextStep.enabled !== false)
-            ? nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour)
+            ? nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour, nowIso)
             : null
           if (!patch.next_step_at) patch.status = 'completed'
           // Conditional, so this is atomic without a preceding claim.
@@ -913,6 +969,22 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           continue
         }
 
+        // FIX 5: a media-headed template with nothing usable to put in the
+        // header is rejected by Meta on every attempt. Catch it HERE, before
+        // the claim, so it costs one statement and shows up as a warning on the
+        // cron response — instead of a daily failed send per cart with the real
+        // reason buried in cart_messages.error_message.
+        const headerKind = String(tmpl.header_type || '').toUpperCase()
+        if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerKind)) {
+          const mediaUrl = step.header_media_url || tmpl.header_media_url || ''
+          const hasMedia = !!tmpl.header_media_id || /^https?:\/\//i.test(String(mediaUrl))
+          if (!hasMedia) {
+            warnings.add(`Template "${step.template_name}" has a ${headerKind.toLowerCase()} header but no usable media, so Meta would reject every send. Add a public ${headerKind.toLowerCase()} URL for this message in Cart Abandonment, or rebuild the template in-app.`)
+            await holdCart(cart)
+            continue
+          }
+        }
+
         // ── This cart WILL send. Claim it now.
         // A conditional update that only matches if next_step_at is still what
         // we read. Two overlapping runs can't both pass this, so a cart can
@@ -942,9 +1014,15 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           // Media-headed templates REQUIRE a header component. Without these
           // Meta rejects the send outright, and cart-recovery templates carry
           // an image header almost always.
+          //
+          // FIX 5: the STEP's own header media URL wins. Templates approved in
+          // the Meta dashboard come back with an upload-session handle rather
+          // than a fetchable URL, so there is often nothing usable on the
+          // template row; this lets the brand point the message at a public
+          // image (their own CDN / product shot) without rebuilding it.
           headerType: tmpl.header_type,
           headerMediaId: tmpl.header_media_id,
-          headerMediaUrl: tmpl.header_media_url,
+          headerMediaUrl: step.header_media_url || tmpl.header_media_url,
         })
 
         if ('error' in result) {
@@ -956,7 +1034,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           if (logErr) console.error('[cart tick] failed to log failed send', logErr.message)
           // Retry this same step at the next send hour rather than skipping it.
           await sb.from('abandoned_carts').update({
-            next_step_at: nextSendInstant(nowIso, 1, sendHour),
+            next_step_at: nextSendInstant(nowIso, 1, sendHour, nowIso),
             updated_at: nowIso,
           }).eq('id', cart.id)
           continue
@@ -978,7 +1056,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
         const nextStep = stepByNo[stepNo + 1]
         const patch: Record<string, any> = { last_step_sent: stepNo, updated_at: nowIso }
         if (stepNo < 3 && nextStep && nextStep.enabled !== false) {
-          patch.next_step_at = nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour)
+          patch.next_step_at = nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour, nowIso)
         } else {
           patch.next_step_at = null
           patch.status = 'completed'
