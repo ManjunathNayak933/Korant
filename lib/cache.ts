@@ -1,14 +1,37 @@
 // Cache using Cloudflare KV (METRICS_CACHE binding) with in-memory fallback for local dev.
 // KV reads: free up to 100k/day. Writes: ~$0.50 per million — negligible.
 // This replaces the old in-memory Map which was useless on edge (each worker has its own memory).
+// All three access paths are tried now, cheapest first, so this works on Pages,
+// on a plain Worker, and in `next dev`.
+import { getRequestContext } from '@cloudflare/next-on-pages'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getKV(): any | null {
+  // 1) The documented next-on-pages path. The IMPORT is static (a `require`
+  // here would break under the edge runtime, which is ESM-only); it's the CALL
+  // that throws outside a request context, and in `next dev` without the CF
+  // adapter — hence the try/catch rather than a lazy import.
   try {
-    return (globalThis as any).METRICS_CACHE ?? null
-  } catch {
-    return null
-  }
+    // `as any`: CloudflareEnv is generated from wrangler.toml at build time and
+    // won't carry the binding in every environment (e.g. `next dev`).
+    const kv = (getRequestContext()?.env as any)?.METRICS_CACHE
+    if (kv) return kv
+  } catch { /* not in a CF request context — fall through */ }
+
+  // 2) next-on-pages v1 also mirrors bindings onto process.env.
+  try {
+    const kv = (process.env as any)?.METRICS_CACHE
+    // A real binding is an object with .get(); a stray string env var is not.
+    if (kv && typeof kv.get === 'function') return kv
+  } catch { /* ignore */ }
+
+  // 3) Plain module/service worker.
+  try {
+    const kv = (globalThis as any).METRICS_CACHE
+    if (kv && typeof kv.get === 'function') return kv
+  } catch { /* ignore */ }
+
+  return null
 }
 
 // Local dev fallback
