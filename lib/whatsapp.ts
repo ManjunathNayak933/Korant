@@ -1,12 +1,28 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/whatsapp.ts                                            │
 // │                                                                        │
-// │ WhatsApp Business Cloud API (Meta Graph API). Two fixes worth noting: │
-// │  1. Templates live on the WABA node (`/{waba_id}/message_templates`), │
-// │     NOT the phone-number node — the old sync always 400'd, so no      │
-// │     template ever reached APPROVED locally.                            │
-// │  2. sendTemplateMessage only attaches a URL-button component when the │
-// │     template actually has buttons; Meta rejects the send otherwise.   │
+// │ WhatsApp Business Cloud API (Meta Graph API).                          │
+// │                                                                        │
+// │ ── Fixes in this revision ──────────────────────────────────────────── │
+// │ B2  syncTemplatesFromMeta() upserted with                              │
+// │     onConflict: 'client_id,template_name,language'. That unique index  │
+// │     does not exist in the live schema, so Postgres raised 42P10 on     │
+// │     EVERY row — and the result was never inspected, so the function    │
+// │     reported "synced N" while writing nothing. No template ever        │
+// │     reached APPROVED locally, so the cart tick held every message      │
+// │     forever and the Cart Abandonment template dropdown stayed empty.   │
+// │     The write is now checked, falls back to select→update→insert when  │
+// │     the index is missing, and throws with an actionable message if a   │
+// │     row genuinely fails.                                                │
+// │ B3  buildTemplateComponents() is exported so the create-template route │
+// │     can persist the SAME `button_config` it submits to Meta. Without   │
+// │     it, findDynamicUrlButtonIndex() returned -1 for every locally      │
+// │     created template and the tick held the send with "no link route".  │
+// │ M5  sendTemplateMessage() returned { wa_message_id: '' } when Meta's   │
+// │     response didn't carry a message id. That counted as a success,     │
+// │     wrote an empty string into a UNIQUE column (so the second one      │
+// │     silently failed with 23505), and left a message that could never   │
+// │     receive a delivery/read callback. A missing id is now an error.    │
 // └──────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 
@@ -33,10 +49,54 @@ export async function getWAConfig(clientId: string): Promise<WAConfig | null> {
 
 // ── Templates ──────────────────────────────────────────────────────────────
 
+// Persist one template row without depending on a unique index existing.
+// Returns 'saved' | 'failed'. `useUpsert` is a caller-held flag so we only pay
+// for the 42P10 discovery once per sync instead of once per template.
+async function saveTemplateRow(
+  row: Record<string, any>,
+  state: { useUpsert: boolean }
+): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabaseAdmin()
+
+  if (state.useUpsert) {
+    const { error } = await sb.from('whatsapp_templates')
+      .upsert(row, { onConflict: 'client_id,template_name,language' })
+    if (!error) return { ok: true }
+    // 42P10 = "there is no unique or exclusion constraint matching the ON
+    // CONFLICT specification". The index is missing on this database; stop
+    // trying to use it and take the explicit path for the rest of the sync.
+    if ((error as any).code !== '42P10') return { ok: false, error: error.message }
+    state.useUpsert = false
+    console.warn(
+      '[whatsapp] whatsapp_templates has no unique index on (client_id, template_name, language) — ' +
+      'falling back to select/update. Run database/migrations/2026-07-cart-abandonment-fixes.sql.'
+    )
+  }
+
+  const { data: existing } = await sb.from('whatsapp_templates')
+    .select('id')
+    .eq('client_id', row.client_id)
+    .eq('template_name', row.template_name)
+    .eq('language', row.language)
+    .limit(1)
+
+  if (existing?.[0]) {
+    const { error } = await sb.from('whatsapp_templates').update(row).eq('id', existing[0].id)
+    return error ? { ok: false, error: error.message } : { ok: true }
+  }
+
+  const { error } = await sb.from('whatsapp_templates').insert(row)
+  // A concurrent sync inserted the same template first — that's fine.
+  if (error && (error as any).code === '23505') return { ok: true }
+  return error ? { ok: false, error: error.message } : { ok: true }
+}
+
 // Message templates are a WhatsApp Business Account (WABA) resource:
 //   GET /{waba_id}/message_templates
 // Paginates via `paging.next` (capped defensively at 5 pages / 500 templates).
-export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) {
+// Returns the number of rows ACTUALLY WRITTEN — not the number fetched from
+// Meta, which is what made the previous silent failure look like a success.
+export async function syncTemplatesFromMeta(clientId: string, config: WAConfig): Promise<number> {
   const wabaId = config.waba_id
   if (!wabaId) {
     throw new Error(
@@ -45,10 +105,11 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
     )
   }
 
-  const sb = getSupabaseAdmin()
   let url: string | null =
     `${META_BASE}/${wabaId}/message_templates?limit=100&fields=id,name,status,category,language,components`
-  let total = 0
+  let saved = 0
+  const failures: string[] = []
+  const state = { useUpsert: true }
 
   for (let page = 0; page < 5 && url; page++) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${config.access_token}` } })
@@ -66,7 +127,7 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
       const bodyText = bodyComp?.text || ''
       const varCount = (bodyText.match(/\{\{[0-9]+\}\}/g) || []).length
 
-      await sb.from('whatsapp_templates').upsert({
+      const result = await saveTemplateRow({
         client_id: clientId,
         template_name: t.name,
         category: t.category,
@@ -82,12 +143,21 @@ export async function syncTemplatesFromMeta(clientId: string, config: WAConfig) 
         variable_count: varCount,
         meta_template_id: t.id,
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'client_id,template_name,language' })
+      }, state)
+
+      if (result.ok) saved++
+      else failures.push(`${t.name} (${t.language}): ${result.error}`)
     }
-    total += templates.length
     url = json.paging?.next || null
   }
-  return total
+
+  if (failures.length) {
+    throw new Error(
+      `Synced ${saved} template(s), but ${failures.length} could not be saved: ${failures.slice(0, 3).join('; ')}` +
+      (failures.length > 3 ? ' …' : '')
+    )
+  }
+  return saved
 }
 
 
@@ -119,13 +189,20 @@ export async function uploadMediaToMeta(
   return { media_id: json.id }
 }
 
-export async function submitTemplate(config: WAConfig, wabaId: string, template: {
+export interface TemplateDraft {
   name: string; category: string; language: string
   bodyText: string; headerText?: string; footerText?: string
   buttonText?: string; buttonUrl?: string; trackingUrl?: string; trackingBase?: string; exampleSlug?: string
   headerType?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
   headerMediaId?: string
-}) {
+}
+
+// Build the exact `components` array we submit to Meta. Exported (B3) so the
+// create-template route can store the BUTTONS component it just submitted:
+// `whatsapp_templates.button_config` is what findDynamicUrlButtonIndex() reads
+// at send time, and a locally created template used to have it null forever —
+// which made the cart tick hold every message with "no link route on template".
+export function buildTemplateComponents(template: TemplateDraft): any[] {
   const components: any[] = []
   if (template.headerType && template.headerType !== 'TEXT' && template.headerMediaId) {
     components.push({
@@ -155,6 +232,16 @@ export async function submitTemplate(config: WAConfig, wabaId: string, template:
       }],
     })
   }
+  return components
+}
+
+/** The BUTTONS component of a draft, or null — this is what goes in button_config. */
+export function buttonConfigFor(template: TemplateDraft): any | null {
+  return buildTemplateComponents(template).find(c => c.type === 'BUTTONS') || null
+}
+
+export async function submitTemplate(config: WAConfig, wabaId: string, template: TemplateDraft) {
+  const components = buildTemplateComponents(template)
 
   const res = await fetch(`${META_BASE}/${wabaId}/message_templates`, {
     method: 'POST',
@@ -211,6 +298,9 @@ export async function sendTemplateMessage(
   config: WAConfig,
   params: SendMessageParams
 ): Promise<{ wa_message_id: string } | { error: string }> {
+  const to = params.to ? params.to.replace(/\D/g, '') : ''
+  if (!to) return { error: 'No destination phone number on this contact' }
+
   const bodyParams = params.variables.map(v => ({ type: 'text', text: v }))
 
   const components: any[] = []
@@ -232,7 +322,7 @@ export async function sendTemplateMessage(
 
   const body: any = {
     messaging_product: 'whatsapp',
-    to: params.to.replace(/\D/g, ''),
+    to,
     type: 'template',
     template: {
       name: params.templateName,
@@ -241,18 +331,31 @@ export async function sendTemplateMessage(
     },
   }
 
-  const res = await fetch(`${META_BASE}/${config.phone_number_id}/messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.access_token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${META_BASE}/${config.phone_number_id}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+  } catch (e: any) {
+    // A network failure must look like a failure to the caller so the step is
+    // retried, not marked as delivered.
+    return { error: `Network error calling Meta: ${e?.message || String(e)}` }
+  }
 
-  const json = await res.json()
-  if (!res.ok) return { error: json.error?.message || 'Send failed' }
-  return { wa_message_id: json.messages?.[0]?.id || '' }
+  const json: any = await res.json().catch(() => ({}))
+  if (!res.ok) return { error: json?.error?.message || `Send failed (${res.status})` }
+
+  // M5: no id back means we have nothing to reconcile delivery/read callbacks
+  // against, and `wa_message_id` is UNIQUE — writing '' poisons the column for
+  // every later message. Treat it as a failure and let the step retry.
+  const waId = json?.messages?.[0]?.id
+  if (!waId) return { error: 'Meta accepted the request but returned no message id' }
+  return { wa_message_id: String(waId) }
 }
 
 // ── Estimate cost ──────────────────────────────────────────────────────────
