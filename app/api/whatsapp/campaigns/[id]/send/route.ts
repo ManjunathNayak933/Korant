@@ -19,7 +19,7 @@ export const runtime = 'edge'
 import { NextRequest, NextResponse } from 'next/server'
 import { getRequestContext } from '@cloudflare/next-on-pages'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { getWAConfig, sendTemplateMessage } from '@/lib/whatsapp'
+import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from '@/lib/whatsapp'
 
 export const dynamic = 'force-dynamic'
 
@@ -132,8 +132,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             // a doubled URL (`…/r/https://…/r/wa-xxx`). The body `__link__` variable
             // still uses the full trackingLink (a full URL in message text is correct).
             trackingUrl: campaign.tracking_slug,
-            // Only send the button component if the template really has one.
-            hasButtons: !!template.has_buttons,
+            // `has_buttons` is true for quick-reply and phone-number buttons
+            // too, and for STATIC url buttons that take no parameter — passing
+            // a URL parameter to any of those makes Meta 400 the whole message.
+            // The deprecated `hasButtons: true` resolved to index 0, so a
+            // template whose quick-reply button sits before its URL button was
+            // rejected on every send. The cart tick was fixed for this; the
+            // campaign path was not. Find the real dynamic button instead.
+            urlButtonIndex: findDynamicUrlButtonIndex(template.button_config),
+            // A media header needs its component on every send or Meta
+            // rejects the message ("parameters missing").
+            headerType: template.header_type,
+            headerMediaId: template.header_media_id,
+            headerMediaUrl: template.header_media_url,
           })
 
           if ('error' in result) {
