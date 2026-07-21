@@ -1,12 +1,27 @@
 import { getSupabaseAdmin } from './supabase'
 
-// Shopify Admin GraphQL API. Discounts, webhooks, and abandoned-checkout
-// polling all go through GraphQL — the REST Admin API is legacy (Oct 2024) and
-// new public apps must be GraphQL-only since April 2025.
-//
-// NOTE: the `shopify_price_rule_id` column (bigint) stores the numeric part of
-// the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>). Function
-// names are kept for interface stability with existing callers.
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │ REPO PATH:  lib/shopify.ts                                                 │
+// │                                                                            │
+// │ Shopify Admin GraphQL API. Discounts, webhooks, and abandoned-checkout     │
+// │ polling all go through GraphQL — the REST Admin API is legacy (Oct 2024)   │
+// │ and new public apps must be GraphQL-only since April 2025.                 │
+// │                                                                            │
+// │ NOTE: the `shopify_price_rule_id` column (bigint) stores the numeric part  │
+// │ of the DiscountCodeNode GID (gid://shopify/DiscountCodeNode/<id>).         │
+// │ Function names are kept for interface stability with existing callers.     │
+// │                                                                            │
+// │ ── Fixes in this revision ────────────────────────────────────────────────│
+// │ H3  fetchShopifyAbandonedCheckouts() reported optedIn = false whenever it  │
+// │     could not SEE a consent field — guest checkouts (no customer node)     │
+// │     and the minimal fallback query. The cart intake wrote that over carts  │
+// │     the CHECKOUTS_* webhook had correctly opted in, silently removing      │
+// │     them from the sequence an hour later. Each checkout now reports        │
+// │     `consentKnown`, and the intake only writes consent when it's true.     │
+// │ H6  The query was hard-coded to `first: 50` and the caller had no way to   │
+// │     bound the work. Each polled checkout costs subrequests inside the      │
+// │     cron invocation, so the tick now passes an explicit budget.            │
+// └──────────────────────────────────────────────────────────────────────────┘
 const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07' // latest stable
 
 export async function shopifyGraphQL(
@@ -203,7 +218,8 @@ export async function registerShopifyOrderWebhooks(
   // ALREADY paid via the Admin API (e.g. a third-party checkout writing the
   // finished order back into Shopify) — those never fire ORDERS_PAID because
   // there's no pending→paid transition. A normal checkout fires both; the
-  // handler dedupes on order_id, so no double-count.
+  // handler dedupes on order_id, and recoverCartsForOrder() dedupes on
+  // recovered_order_id, so nothing is counted twice.
   const topics = ['ORDERS_PAID', 'ORDERS_CREATE', 'REFUNDS_CREATE', 'ORDERS_CANCELLED']
   for (const topic of topics) {
     try {
@@ -283,8 +299,8 @@ export async function registerShopifyCheckoutWebhooks(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Abandoned-checkout POLLING via the GraphQL Admin `abandonedCheckouts` query
-// (2026-07). This is the reliable modern path — it covers stores on Checkout
+// Abandoned-checkout POLLING via the GraphQL Admin `abandonedCheckouts` query.
+// This is the reliable modern path — it covers stores on Checkout
 // Extensibility regardless of webhook delivery. Requires the `read_orders`
 // scope (already requested at install) and Protected Customer Data approval in
 // the Partner dashboard for the customer/address fields.
@@ -300,6 +316,13 @@ export interface PolledAbandonedCheckout {
   email: string | null
   name: string | null
   optedIn: boolean
+  /**
+   * H3: whether marketing consent was actually OBSERVABLE for this checkout.
+   * False for guest checkouts (no customer node) and for the minimal fallback
+   * query. `optedIn: false, consentKnown: false` means "we don't know" — the
+   * intake must not write that over a cart the webhook opted in.
+   */
+  consentKnown: boolean
   totalPrice: number
   currency: string
   items: { title?: string; qty?: number }[]
@@ -321,11 +344,15 @@ function tokenFromRecoveryUrl(url: string | null | undefined): string | null {
 
 export async function fetchShopifyAbandonedCheckouts(
   clientId: string,
-  updatedSinceIso: string
+  updatedSinceIso: string,
+  limit = 50
 ): Promise<PolledAbandonedCheckout[]> {
   const client = await getClientShopify(clientId)
   if (!client) return []
 
+  // H6: the caller (the hourly tick) budgets this — each returned checkout
+  // costs further subrequests downstream inside the same cron invocation.
+  const first = Math.max(1, Math.min(50, Math.trunc(limit) || 1))
   const search = `updated_at:>='${updatedSinceIso}'`
   const core = `
     id
@@ -339,22 +366,25 @@ export async function fetchShopifyAbandonedCheckouts(
 
   // Primary query includes customer identity + SMS marketing consent. If Meta-
   // data fields shift between API versions, fall back to a minimal field set
-  // (those carts are stored but not messageable until consent is known).
-  const withCustomer = `query Polled($q: String) {
-    abandonedCheckouts(first: 50, query: $q) { nodes {
+  // (those carts are stored but their consent is reported as UNKNOWN, never as
+  // a decline).
+  const withCustomer = `query Polled($q: String, $n: Int!) {
+    abandonedCheckouts(first: $n, query: $q) { nodes {
       ${core}
       customer { firstName lastName email phone smsMarketingConsent { marketingState } }
     } } }`
-  const minimal = `query Polled($q: String) {
-    abandonedCheckouts(first: 50, query: $q) { nodes { ${core} } } }`
+  const minimal = `query Polled($q: String, $n: Int!) {
+    abandonedCheckouts(first: $n, query: $q) { nodes { ${core} } } }`
 
   let nodes: any[] = []
+  let customerFieldsAvailable = true
   try {
-    const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, withCustomer, { q: search })
+    const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, withCustomer, { q: search, n: first })
     nodes = data?.abandonedCheckouts?.nodes || []
   } catch {
+    customerFieldsAvailable = false
     try {
-      const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, minimal, { q: search })
+      const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, minimal, { q: search, n: first })
       nodes = data?.abandonedCheckouts?.nodes || []
     } catch (e) {
       console.error('[shopify poll] abandonedCheckouts query failed', { clientId, e: String(e) })
@@ -363,8 +393,8 @@ export async function fetchShopifyAbandonedCheckouts(
   }
 
   return nodes.map((n: any): PolledAbandonedCheckout => {
-    const cust = n.customer || {}
-    const phone = cust.phone
+    const cust = n.customer || null
+    const phone = cust?.phone
       || n.shippingAddress?.phone
       || n.billingAddress?.phone
       || null
@@ -374,9 +404,12 @@ export async function fetchShopifyAbandonedCheckouts(
     return {
       externalId: tokenFromRecoveryUrl(n.abandonedCheckoutUrl) || gidToNumericId(n.id).toString(),
       phone,
-      email: cust.email || null,
-      name: cust.firstName ? `${cust.firstName} ${cust.lastName || ''}`.trim() : (n.billingAddress?.name || null),
+      email: cust?.email || null,
+      name: cust?.firstName ? `${cust.firstName} ${cust.lastName || ''}`.trim() : (n.billingAddress?.name || null),
       optedIn,
+      // Only a checkout with a real customer record on the full query tells us
+      // anything about consent. A guest checkout tells us nothing.
+      consentKnown: customerFieldsAvailable && !!cust,
       totalPrice: parseFloat(n.totalPriceSet?.shopMoney?.amount || '0'),
       currency: n.totalPriceSet?.shopMoney?.currencyCode || 'INR',
       items: (n.lineItems?.nodes || []).map((li: any) => ({ title: li.title, qty: li.quantity })),
