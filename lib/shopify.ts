@@ -2,17 +2,6 @@ import { getSupabaseAdmin } from './supabase'
 
 // ┌──────────────────────────────────────────────────────────────────────────┐
 // │ REPO PATH:  lib/shopify.ts                                                 │
-// │                                                                            │
-// │ ── Fixes in this revision ──────────────────────────────────────────────── │
-// │ H3  fetchShopifyAbandonedCheckouts() reported optedIn = false whenever it  │
-// │     could not SEE a consent field — guest checkouts (no customer node)     │
-// │     and the minimal fallback query. The cart intake wrote that over carts  │
-// │     the CHECKOUTS_* webhook had correctly opted in, silently removing      │
-// │     them from the sequence an hour later. Each checkout now reports        │
-// │     `consentKnown`, and the intake only writes consent when it's true.     │
-// │ H6  The query was hard-coded to `first: 50` and the caller had no way to   │
-// │     bound the work. Each polled checkout costs subrequests inside the      │
-// │     cron invocation, so the tick now passes an explicit budget.            │
 // └──────────────────────────────────────────────────────────────────────────┘
 const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07' // latest stable
 
@@ -303,19 +292,28 @@ export async function registerShopifyCheckoutWebhooks(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PolledAbandonedCheckout {
-  externalId: string
   /**
-   * P2c: the checkout's numeric Shopify id, ALWAYS present. `externalId` is
-   * derived from the recovery URL, which on Checkout Extensibility stores is
-   * the `cn` token — a DIFFERENT value from the REST `checkout.token` the
-   * CHECKOUTS_* webhook stores as external_id, and from the
-   * `order.checkout_token` the order webhook matches on. That mismatch means
-   * the poll and the webhook create two rows for one checkout (the unique
-   * index can't help — the ids genuinely differ), and a poll-only cart never
-   * exact-matches its order. Carrying the numeric id lets the caller dedupe on
-   * something both sides agree about.
+   * FIX 3: the CANONICAL id — the checkout's numeric Shopify id. Both the
+   * CHECKOUTS_* webhook (`checkout.id`) and this poll (the numeric part of the
+   * GraphQL gid) see the same value, so keying carts on it makes the two paths
+   * converge on ONE row.
+   *
+   * It used to be `tokenFromRecoveryUrl(abandonedCheckoutUrl)`, which on
+   * Checkout Extensibility stores is the `cn` token — a DIFFERENT string from
+   * the REST `checkout.token` the webhook stored. Neither side recognised the
+   * other's id, so every CE-store cart existed twice and the shopper got two
+   * of every message.
    */
+  externalId: string
+  /** Same numeric id, kept as a named field for callers that want it explicitly. */
   checkoutId: string | null
+  /**
+   * The token parsed out of `abandonedCheckoutUrl` (the `cn` token on CE
+   * stores, the classic checkout token elsewhere). Passed as an ALTERNATE id so
+   * carts stored by an older build — or by a webhook that had no numeric id —
+   * are still matched instead of duplicated.
+   */
+  recoveryToken: string | null
   /** When Shopify says the checkout was created. Used as abandoned_at. */
   createdAt: string | null
   phone: string | null
@@ -343,11 +341,31 @@ export interface PolledAbandonedCheckout {
 // polled cart shared one external_id, overwrote the same row, and polling died
 // once that row completed. Skip the `cn/` segment, and allow `-`/`_` since
 // modern tokens aren't strictly alphanumeric.
-function tokenFromRecoveryUrl(url: string | null | undefined): string | null {
+// FIX 3: exported, because app/api/webhook/shopify-checkout/route.ts has to
+// derive the SAME token from the REST payload's `abandoned_checkout_url`. That
+// is what lets a webhook find a row the poll already created (and vice versa).
+export function tokenFromRecoveryUrl(url: string | null | undefined): string | null {
   const m = String(url || '').match(/\/checkouts\/(?:cn\/)?([A-Za-z0-9_-]+)/)
   return m ? m[1] : null
 }
 
+// Shopify caps this connection at 250 per page; 50 keeps each response small
+// enough that a slow store can't time the cron invocation out.
+const POLL_PAGE_SIZE = 50
+const POLL_MAX_PAGES = 5
+
+// ── FIX 4 ────────────────────────────────────────────────────────────────────
+// This used to issue ONE `abandonedCheckouts(first: 25)` call with no sort key
+// and no cursor. The connection's default order is oldest-first, and the search
+// window is a rolling 24h — so on any store with more than 25 abandoned
+// checkouts a day the SAME oldest 25 came back every hour and the newer ones
+// (the recoverable ones) were never intaken at all. They only became visible
+// once they'd aged out of the window, by which point they were 24h stale.
+//
+// Now: newest-first, and paged with a cursor until the caller's budget is
+// filled. `updatedSinceIso` is supplied by the tick as a high-water mark
+// (cart_sequences.last_polled_at) rather than a fixed 24h, so steady-state runs
+// only look at the delta and the budget stretches much further.
 export async function fetchShopifyAbandonedCheckouts(
   clientId: string,
   updatedSinceIso: string,
@@ -358,7 +376,7 @@ export async function fetchShopifyAbandonedCheckouts(
 
   // H6: the caller (the hourly tick) budgets this — each returned checkout
   // costs further subrequests downstream inside the same cron invocation.
-  const first = Math.max(1, Math.min(50, Math.trunc(limit) || 1))
+  const want = Math.max(1, Math.trunc(limit) || 1)
   const search = `updated_at:>='${updatedSinceIso}'`
   const core = `
     id
@@ -370,32 +388,62 @@ export async function fetchShopifyAbandonedCheckouts(
     billingAddress { name phone }
     shippingAddress { phone }`
 
-  // Primary query includes customer identity + SMS marketing consent. If Meta-
-  // data fields shift between API versions, fall back to a minimal field set
-  // (those carts are stored but their consent is reported as UNKNOWN, never as
-  // a decline).
-  const withCustomer = `query Polled($q: String, $n: Int!) {
-    abandonedCheckouts(first: $n, query: $q) { nodes {
-      ${core}
-      customer { firstName lastName email phone smsMarketingConsent { marketingState } }
-    } } }`
-  const minimal = `query Polled($q: String, $n: Int!) {
-    abandonedCheckouts(first: $n, query: $q) { nodes { ${core} } } }`
+  // Two axes of graceful degradation, tried in order:
+  //   1. customer fields  — identity + SMS consent. Needs Protected Customer
+  //      Data approval; without it the whole query errors, so we retry without.
+  //   2. sortKey/reverse  — if a future API version renames the enum we still
+  //      want carts, just in the old (oldest-first) order.
+  // `consentKnown` is false on the minimal query: "we couldn't see consent",
+  // NEVER "they declined" (H3).
+  const build = (opts: { customer: boolean; sorted: boolean }) => {
+    const order = opts.sorted ? ', sortKey: CREATED_AT, reverse: true' : ''
+    const custFields = opts.customer
+      ? 'customer { firstName lastName email phone smsMarketingConsent { marketingState } }'
+      : ''
+    return `query Polled($q: String, $n: Int!, $after: String) {
+      abandonedCheckouts(first: $n, query: $q, after: $after${order}) {
+        nodes { ${core} ${custFields} }
+        pageInfo { hasNextPage endCursor }
+      } }`
+  }
 
-  let nodes: any[] = []
   let customerFieldsAvailable = true
-  try {
-    const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, withCustomer, { q: search, n: first })
-    nodes = data?.abandonedCheckouts?.nodes || []
-  } catch {
-    customerFieldsAvailable = false
-    try {
-      const data = await shopifyGraphQL(client.shopify_domain, client.shopify_token, minimal, { q: search, n: first })
-      nodes = data?.abandonedCheckouts?.nodes || []
-    } catch (e) {
-      console.error('[shopify poll] abandonedCheckouts query failed', { clientId, e: String(e) })
-      return []
+  let sorted = true
+  let after: string | null = null
+  const nodes: any[] = []
+
+  for (let page = 0; page < POLL_MAX_PAGES && nodes.length < want; page++) {
+    const n = Math.min(POLL_PAGE_SIZE, want - nodes.length)
+    let conn: any = null
+
+    // Try the richest query first, then peel options off. Only the FIRST page
+    // pays for this discovery — the flags persist across pages.
+    for (const attempt of [
+      { customer: customerFieldsAvailable, sorted },
+      { customer: customerFieldsAvailable, sorted: false },
+      { customer: false, sorted: false },
+    ]) {
+      try {
+        const data = await shopifyGraphQL(
+          client.shopify_domain, client.shopify_token,
+          build(attempt), { q: search, n, after }
+        )
+        conn = data?.abandonedCheckouts
+        customerFieldsAvailable = attempt.customer
+        sorted = attempt.sorted
+        break
+      } catch (e) {
+        // Last attempt failed too — give up on this client for this tick.
+        if (!attempt.customer && !attempt.sorted) {
+          console.error('[shopify poll] abandonedCheckouts query failed', { clientId, page, e: String(e) })
+        }
+      }
     }
+
+    if (!conn) break
+    nodes.push(...(conn.nodes || []))
+    if (!conn.pageInfo?.hasNextPage || !conn.pageInfo?.endCursor) break
+    after = conn.pageInfo.endCursor
   }
 
   return nodes.map((n: any): PolledAbandonedCheckout => {
@@ -408,9 +456,14 @@ export async function fetchShopifyAbandonedCheckouts(
     // never truthiness of the consent object (that bug opted in decliners).
     const optedIn = String(cust?.smsMarketingConsent?.marketingState || '').toUpperCase() === 'SUBSCRIBED'
     const numericId = gidToNumericId(n.id)
+    const recoveryToken = tokenFromRecoveryUrl(n.abandonedCheckoutUrl)
     return {
-      externalId: tokenFromRecoveryUrl(n.abandonedCheckoutUrl) || String(numericId),
+      // FIX 3: numeric checkout id is the canonical key — it's the one value
+      // the CHECKOUTS_* webhook also has. Fall back to the recovery token only
+      // when the gid didn't parse.
+      externalId: numericId ? String(numericId) : (recoveryToken || ''),
       checkoutId: numericId ? String(numericId) : null,
+      recoveryToken,
       createdAt: n.createdAt || null,
       phone,
       email: cust?.email || null,
