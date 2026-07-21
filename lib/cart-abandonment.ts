@@ -1,51 +1,27 @@
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ REPO PATH:  lib/cart-abandonment.ts                                        │
-// │                                                                            │
-// │ The engine behind the Cart Abandonment tab. Platform-neutral: adapters    │
-// │ (Shopify checkout webhook, GraphQL abandonedCheckouts polling, generic     │
-// │ webhook, storefront snippet) all call intakeAbandonedCart() with the same  │
-// │ normalised shape. The hourly cron calls runCartAbandonmentTick(). Order    │
-// │ webhooks call recoverCartsForOrder() to stop the sequence + attribute.     │
-// │                                                                            │
-// │ ALL SCHEDULING IS IST (Asia/Kolkata, UTC+05:30). IST has no DST, so the   │
-// │ wall-clock math is exact integer arithmetic — no Intl, nothing can throw. │
-// │                                                                            │
-// │ ── Fixes in this revision ────────────────────────────────────────────────│
-// │ H1  recoverCartsForOrder() is now IDEMPOTENT. Shopify fires orders/create │
-// │     AND orders/paid for the same purchase; the second call used to stamp  │
-// │     a second cart of the same buyer with the same order id and value,     │
-// │     double-counting recovered revenue for repeat abandoners.              │
-// │ H2  Concurrent intakes (CHECKOUTS_CREATE + CHECKOUTS_UPDATE + the poll)   │
-// │     used to insert two rows for one checkout and message the shopper      │
-// │     twice. A 23505 from the new unique index is now resolved by re-reading│
-// │     and patching the winning row.                                          │
-// │ H3  The hourly Shopify poll could no longer observe consent for guest     │
-// │     checkouts and wrote opted_in = false over a cart the webhook had      │
-// │     correctly opted in. Consent is only written when the SOURCE ACTUALLY  │
-// │     OBSERVED IT (CartIntake.consentKnown).                                 │
-// │ H4  A refresh recomputed next_step_at from NOW, so a cart abandoned at    │
-// │     23:30 IST slipped a whole day at the 00:30 poll. The schedule is now  │
-// │     derived from the cart's own abandoned_at and never moves once set.    │
-// │ H5  A step that was SKIPPED (missing/disabled at tick time) advanced      │
-// │     last_step_sent, so a later purchase was credited to a message that    │
-// │     never went out. The credited step now comes from cart_messages.       │
-// │ H6  The Shopify poll was unbudgeted and ran before any sends — up to ~200 │
-// │     subrequests per client, enough to blow Cloudflare's per-invocation    │
-// │     cap before a single message was attempted. It is now capped, and the  │
-// │     sequence/steps lookup is hoisted out of the per-checkout loop.        │
-// │ H7  MAX_SENDS_PER_RUN was a global budget consumed in a stable client     │
-// │     order, so one large brand starved everyone else every hour. Clients   │
-// │     are shuffled and each gets a slice.                                   │
-// │ M1  A missing BASE_URL produced a relative "/r/…" link inside a real      │
-// │     WhatsApp message. Sends that need a body link now hold instead.       │
-// │ M2  Email-only carts were discarded, so "carts detected" undercounted.    │
-// │     They are stored (unmessageable) and can be messaged later if a phone  │
-// │     arrives on a refresh.                                                  │
-// │ M7  Per-step "sent" is counted for the SAME COHORT as the recoveries      │
-// │     instead of by message timestamp, so the funnel can't mix months.      │
-// │ M9  normalizePhone() strips trunk zeros — "09876543210" and               │
-// │     "+919876543210" now match, so those carts stop being chased after     │
-// │     the customer has paid.                                                 │
+// │ REPO PATH:  lib/cart-abandonment.ts                                       
+// │ ── Fixes in THIS revision ────────────────────────────────────────────────│
+// │ P1a MAX_SENDS_PER_RUN budgeted only SUCCESSFUL SENDS. Held and skipped    │
+// │     carts each cost a claim plus an update and decremented nothing, so a  │
+// │     client with 200 due carts and a pending template did 400 subrequests  │
+// │     while `capped` stayed false — enough clients like that and the        │
+// │     invocation blew Cloudflare's subrequest cap, the per-client catch     │
+// │     swallowed it, and the endpoint reported {ok:true, sent:0}. There is   │
+// │     now a WORK budget, and holds/skips are single atomic statements.      │
+// │ P1b reverseCartRecovery() — refunds and cancellations never un-recovered  │
+// │     a cart, so recovered revenue only ever went up.                       │
+// │ P2a normalizePhone() mangled two real formats: a trunk zero AFTER the     │
+// │     country code ("+91 0 98765…" → 13 digits, never matched), and any     │
+// │     ten-digit foreign number ("+65 6123 4567" → "916561234567").          │
+// │ P2b Media-headed templates could never send: whatsapp_templates stores    │
+// │     header_type/header_media_id but the tick never passed them, so Meta   │
+// │     rejected every image-headed cart template — which is most of them.    │
+// │ P3a intake now accepts the source's real abandonment time. The hourly     │
+// │     poll stamped `now`, shifting the H4 anchor and the expiry clock by up │
+// │     to an hour and bucketing late-night carts into the wrong month.       │
+// │ P3b patchExisting() reported scheduled:true immediately after standing a  │
+// │     cart DOWN — `patch.next_step_at ?? existing.next_step_at` falls       │
+// │     through an explicit null to the old timestamp.                        │
 // └──────────────────────────────────────────────────────────────────────────┘
 import { getSupabaseAdmin } from './supabase'
 import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from './whatsapp'
@@ -66,6 +42,11 @@ const MIN_SENDS_PER_CLIENT = 5
 const MAX_DUE_CARTS_PER_CLIENT = 200
 // A claimed cart that crashes mid-send self-heals after this lease expires.
 const CLAIM_LEASE_MS = 2 * 3600000
+// Each cart costs subrequests whether or not it ends in a send (claim + send +
+// log + advance for a send; claim + update for a hold or a skip). The per-client
+// work budget is the send budget times this, so a client whose carts are ALL
+// being held can't quietly consume the whole invocation.
+const WORK_PER_SEND = 4
 // Shopify polling costs ~3 subrequests per checkout. Budget it explicitly so it
 // can never consume the invocation before any message is sent.
 const MAX_POLL_INTAKES_PER_CLIENT = 25
@@ -79,18 +60,56 @@ const STATS_MAX_COHORT_CHUNKS = 20
 // Strip non-digits, drop trunk/IDD zeros ("0", "00", "0091"), then default a
 // bare 10-digit number to India (+91). Returns '' when the number can't be
 // messaged — the cart is still stored, just not chased.
+//
+// ── Fixes in this revision ──────────────────────────────────────────────────
+// P2a  The trunk zero was only stripped from the START OF THE STRING, so
+//      "+91 0 98765 43210" (which Shopify checkout fields routinely carry)
+//      survived as the 13-digit "9109876543210" and never matched the 12-digit
+//      "919876543210" stored from another source. Result: a duplicate cart, a
+//      duplicate message, and a recovery match that misses after the customer
+//      has already paid — the exact failure M9 was written to close, one branch
+//      over. The country-code-then-zero case is now handled explicitly.
+// P2b  `p.length === 10` prepended 91 to ANY ten-digit number. Singapore
+//      (+65 + 8 digits), Denmark and Norway are all 10 digits in E.164, so
+//      "+65 6123 4567" became "916561234567" — an invalid Indian mobile that
+//      Meta rejects on every retry until the cart expires. The digits alone
+//      cannot settle this (a Singapore number starting 6 looks exactly like an
+//      Indian mobile starting 6), but the LEADING "+" or "00" can: it means
+//      the caller has already supplied a country code, so we must not add one.
 export function normalizePhone(raw: string | null | undefined): string {
-  let p = String(raw || '').replace(/\D/g, '')
+  const s = String(raw ?? '').trim()
+
+  // A leading "+" or IDD "00" says: this is already E.164, country code
+  // included. Anything else is treated as a local Indian number.
+  const explicitIntl = /^(\+|00)/.test(s)
+
+  let p = s.replace(/\D/g, '')
   if (!p) return ''
+
   // "09876543210" (trunk prefix) and "00919876543210" (IDD prefix) must land on
   // the same string as "+91 98765 43210", or recovery matching silently misses
   // and we keep messaging a customer who has already paid.
   p = p.replace(/^0+/, '')
   if (!p) return ''
-  if (p.length === 10) p = `91${p}`      // bare Indian mobile
-  // E.164 allows at most 15 digits; anything shorter than 11 here is not a
-  // country code + subscriber number we can dial.
-  return (p.length >= 11 && p.length <= 15) ? p : ''
+
+  // P2a: a trunk zero sitting BETWEEN the country code and the subscriber
+  // number ("+91 0 98765 43210" — Shopify checkout fields carry these). The
+  // leading-zero strip above never saw it. Only rewrite when what's left is a
+  // real Indian mobile, so a legitimate 13-digit foreign number is untouched.
+  if (p.length === 13 && p.startsWith('910') && /^[6-9]/.test(p.slice(3))) {
+    p = `91${p.slice(3)}`
+  }
+
+  // P2b: default a BARE ten-digit number to India — but only when the input
+  // didn't already carry a country code. Indian mobiles start 6-9.
+  if (!explicitIntl && p.length === 10 && /^[6-9]/.test(p)) p = `91${p}`
+
+  // E.164 tops out at 15 digits. The floor differs by how much we trust the
+  // input: an explicitly international number is taken at face value (some
+  // country code + subscriber pairs are genuinely short), whereas a bare local
+  // string shorter than 11 after the India default is junk we can't dial.
+  const minLen = explicitIntl ? 8 : 11
+  return (p.length >= minLen && p.length <= 15) ? p : ''
 }
 
 // ── Scheduling (IST only) ───────────────────────────────────────────────────
@@ -187,6 +206,24 @@ export interface CartIntake {
   recoveryUrl?: string | null
   source?: string
   externalId?: string | null
+  /**
+   * When the cart was ACTUALLY abandoned, if the source knows. The hourly
+   * Shopify poll sees checkouts up to an hour after the fact; stamping those
+   * with `now` shifted the H4 schedule anchor and the expiry_days clock by up
+   * to an hour, and could bucket a 23:xx cart into the wrong month on the
+   * dashboard. Omit it and we fall back to now, as before.
+   */
+  abandonedAt?: string | null
+  /**
+   * P2c: OTHER ids that could identify a cart this source has already stored
+   * under a different name. Looked up before inserting; never written.
+   *
+   * Shopify hands us two different identifiers for one checkout — the REST
+   * `checkout.token` that CHECKOUTS_CREATE/UPDATE carries, and the `cn` token
+   * embedded in the GraphQL poll's abandonedCheckoutUrl. Without this the two
+   * paths create two rows for one shopper and message them twice.
+   */
+  altExternalIds?: (string | null | undefined)[]
 }
 
 export interface IntakeResult {
@@ -220,6 +257,13 @@ export async function intakeAbandonedCart(
   // Only a cart we can actually message gets a schedule.
   const canSchedule = !!(phone && seq?.enabled && startStep && optedIn)
   const nowIso = new Date().toISOString()
+
+  // Trust a supplied abandonment time only if it parses and isn't in the
+  // future (a bad clock on a storefront snippet must not park a cart forever).
+  const abandonedAt = (() => {
+    const t = input.abandonedAt ? new Date(input.abandonedAt).getTime() : NaN
+    return Number.isFinite(t) && t <= Date.now() ? new Date(t).toISOString() : nowIso
+  })()
   // H4: the schedule belongs to the ABANDONMENT, not to whenever the latest
   // webhook or poll happened to touch the row.
   const scheduleFrom = (abandonedAt: string) =>
@@ -243,8 +287,9 @@ export async function intakeAbandonedCart(
     status: 'open',
     // Start the sequence at the first ENABLED step (step 1 may be disabled).
     last_step_sent: startStep ? (startStep.step_no - 1) : 0,
-    next_step_at: canSchedule ? scheduleFrom(nowIso) : null,
-    abandoned_at: nowIso,
+    // H4: anchor on the ABANDONMENT, which for a polled checkout is not now.
+    next_step_at: canSchedule ? scheduleFrom(abandonedAt) : null,
+    abandoned_at: abandonedAt,
     updated_at: nowIso,
   }
 
@@ -262,11 +307,20 @@ export async function intakeAbandonedCart(
   const EXISTING_COLS =
     'id, status, opted_in, last_step_sent, next_step_at, abandoned_at, recovery_url, phone, email'
 
+  // Every id this checkout might already be stored under, primary first.
+  const candidateIds = Array.from(new Set(
+    [input.externalId, ...(input.altExternalIds || [])]
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean)
+  ))
+
   const findExisting = async (): Promise<ExistingCart | null> => {
-    if (!input.externalId) return null
+    if (!candidateIds.length) return null
+    // One statement, not one per id — this runs on every webhook delivery.
     const { data } = await sb
       .from('abandoned_carts').select(EXISTING_COLS)
-      .eq('client_id', input.clientId).eq('external_id', input.externalId)
+      .eq('client_id', input.clientId).in('external_id', candidateIds)
+      .order('abandoned_at', { ascending: true })
       .limit(1)
     return (data?.[0] as ExistingCart) || null
   }
@@ -314,10 +368,18 @@ export async function intakeAbandonedCart(
     const { error } = await sb.from('abandoned_carts').update(patch).eq('id', existing.id)
     if (error) return { stored: false, cartId: existing.id, reason: error.message }
 
+    // `patch.next_step_at ?? existing.next_step_at` reported scheduled: true
+    // immediately after standing a cart DOWN — the stand-down writes an
+    // explicit null, and ?? falls straight through it to the old timestamp.
+    // Ask whether the key was written, not whether its value is truthy.
+    const effectiveNext = Object.prototype.hasOwnProperty.call(patch, 'next_step_at')
+      ? patch.next_step_at
+      : existing.next_step_at
+
     return {
       stored: true,
       cartId: existing.id,
-      scheduled: !!(patch.next_step_at ?? existing.next_step_at),
+      scheduled: !!effectiveNext,
       messageable: canScheduleNow,
     }
   }
@@ -364,13 +426,24 @@ export async function recoverCartsForOrder(input: {
   orderId: string
   orderValue: number
   externalId?: string | null   // e.g. Shopify order.checkout_token
+  /**
+   * P2c: additional ids the cart might be stored under. Shopify orders carry
+   * BOTH `checkout_token` (what the CHECKOUTS_* webhook stored) and
+   * `checkout_id` (what the GraphQL poll can produce), and which one is on the
+   * cart depends on which path saw it first. Pass both.
+   */
+  externalIds?: (string | null | undefined)[]
 }): Promise<{ recovered: number; step?: number | null; duplicate?: boolean }> {
   const sb = getSupabaseAdmin()
   const phone = normalizePhone(input.phone)
   const email = (input.email || '').trim().toLowerCase() || null
-  const externalId = (input.externalId || '').trim() || null
+  const externalIds = Array.from(new Set(
+    [input.externalId, ...(input.externalIds || [])]
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean)
+  ))
   const orderId = String(input.orderId || '').trim()
-  if (!phone && !email && !externalId) return { recovered: 0 }
+  if (!phone && !email && !externalIds.length) return { recovered: 0 }
 
   // ── H1: idempotency ───────────────────────────────────────────────────────
   // Shopify registers ORDERS_CREATE *and* ORDERS_PAID, and a normal online
@@ -410,10 +483,11 @@ export async function recoverCartsForOrder(input: {
   const RECOVERABLE = ['open', 'completed']
 
   // 1) Exact match on the checkout's own id (no time window — it IS this cart).
-  if (externalId) {
+  if (externalIds.length) {
     const { data } = await sb.from('abandoned_carts')
       .select('id, last_step_sent, abandoned_at, status')
-      .eq('client_id', input.clientId).in('status', RECOVERABLE).eq('external_id', externalId)
+      .eq('client_id', input.clientId).in('status', RECOVERABLE).in('external_id', externalIds)
+      .order('abandoned_at', { ascending: false })
       .limit(1)
     if (data?.[0]) { exactMatch = data[0]; byId.set(data[0].id, data[0]) }
   }
@@ -487,6 +561,50 @@ export async function recoverCartsForOrder(input: {
   return { recovered: 1, step }
 }
 
+// ── Reversal: the recovered order was refunded or cancelled ──────────────────
+// reverseSale() in lib/attribution.ts only ever touched `events`, so nothing
+// wrote back to abandoned_carts. A refunded order stayed status = 'recovered'
+// with its full recovered_value forever, which permanently inflated the tab's
+// headline "revenue recovered by this activity", the Overview KPI and
+// recoveryRate. On a fashion/footwear D2C running 25-35% returns that is not a
+// rounding error.
+//
+// The cart is moved to 'expired' rather than back to 'open': the shopper did
+// complete a purchase, and restarting a "you left something behind" sequence at
+// a customer who has just returned an order is worse than losing the row.
+// Idempotent — a retried refund webhook matches nothing the second time.
+export async function reverseCartRecovery(input: {
+  clientId: string
+  orderId: string
+}): Promise<{ reversed: number }> {
+  const orderId = String(input.orderId || '').trim()
+  if (!orderId) return { reversed: 0 }
+
+  const sb = getSupabaseAdmin()
+  const { data, error } = await sb.from('abandoned_carts')
+    .update({
+      status: 'expired',
+      recovered_at: null,
+      recovered_order_id: null,
+      recovered_value: 0,
+      recovered_by_step: null,
+      next_step_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('client_id', input.clientId)
+    .eq('recovered_order_id', orderId)
+    .eq('status', 'recovered')
+    .select('id')
+
+  if (error) {
+    console.error('[reverseCartRecovery] failed', {
+      clientId: input.clientId, orderId, error: error.message,
+    })
+    return { reversed: 0 }
+  }
+  return { reversed: data?.length || 0 }
+}
+
 // ── Shopify polling fallback ─────────────────────────────────────────────────
 // Belt-and-braces alongside the CHECKOUTS_CREATE/UPDATE webhooks: the GraphQL
 // Admin `abandonedCheckouts` query returns every checkout where the shopper
@@ -524,6 +642,13 @@ async function pollShopifyAbandonedCarts(
       recoveryUrl: c.recoveryUrl,
       source: 'shopify',
       externalId: c.externalId,
+      // P2c: the poll's id (a `cn` token on Checkout Extensibility stores) is
+      // not the REST checkout.token the webhook stores. Look the cart up under
+      // the numeric checkout id too, so the two paths converge on ONE row.
+      altExternalIds: [c.checkoutId],
+      // The poll runs up to an hour after the fact — date the cart when the
+      // shopper actually left, not when we noticed.
+      abandonedAt: c.createdAt || null,
     }, ctx)
     if (r.stored) stored++
   }
@@ -599,6 +724,17 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
     try {
       const sendHour = numOr(seq.send_hour, 10)
       let clientSends = perClientBudget
+      // P1: MAX_SENDS_PER_RUN only ever budgeted SUCCESSFUL SENDS. Every other
+      // exit from the cart loop — step missing/disabled, template not
+      // APPROVED, no BASE_URL for a body link, no link route on the template —
+      // still spent a claim plus an update, and decremented nothing. A client
+      // with 200 due carts and a pending template therefore did 400
+      // subrequests while sendBudget sat at 80 and `capped` stayed false. A few
+      // such clients at the same send hour clear Cloudflare's per-invocation
+      // subrequest cap; fetch throws, the per-client catch below swallows it,
+      // and the endpoint returns a healthy-looking {ok:true, sent:0}.
+      // This budgets WORK, not just sends.
+      let clientWork = perClientBudget * WORK_PER_SEND
 
       // 1) Expire stale open carts for this client (stop chasing dead carts).
       const expiryStart = new Date(nowMs - numOr(seq.expiry_days, 14) * DAY_MS).toISOString()
@@ -640,8 +776,13 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
       //    `button_config` is needed too: `has_buttons` is true for ANY button
       //    (quick-reply, phone-number, static URL), and attaching a URL
       //    parameter to one of those makes Meta reject the whole send.
+      //    `header_type` / `header_media_id` / `header_media_url` are needed
+      //    too: a template with an IMAGE/VIDEO/DOCUMENT header REQUIRES a
+      //    header component at send time. Without it Meta rejects the message
+      //    ("parameters missing") — and cart-recovery templates are image-
+      //    headed almost always, so those steps could never send at all.
       const { data: tmpls } = await sb.from('whatsapp_templates')
-        .select('template_name, status, variable_count, language, has_buttons, button_config')
+        .select('template_name, status, variable_count, language, has_buttons, button_config, header_type, header_media_id, header_media_url')
         .eq('client_id', clientId)
       const tmplByKey: Record<string, any> = {}
       const tmplByName: Record<string, any> = {}
@@ -661,32 +802,33 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
         .limit(MAX_DUE_CARTS_PER_CLIENT)
 
       // Push a cart to the next send hour without burning its step.
-      const holdCart = async (cartId: string) => {
+      //
+      // CONDITIONAL on next_step_at, exactly like the send claim: this is now
+      // the ONLY statement a held cart costs. It used to run after a separate
+      // claim, so every hold was 2 subrequests. Two overlapping runs writing
+      // the same hold timestamp is harmless, and the guard keeps a hold from
+      // stomping on a claim another run has already taken.
+      const holdCart = async (cart: any) => {
         held++
         await sb.from('abandoned_carts').update({
           next_step_at: nextSendInstant(nowIso, 1, sendHour),
           updated_at: nowIso,
-        }).eq('id', cartId)
+        }).eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
       }
 
       for (const cart of dueCarts || []) {
-        if (sendBudget <= 0 || clientSends <= 0) { capped = true; break }
+        if (sendBudget <= 0 || clientSends <= 0 || clientWork <= 0) { capped = true; break }
         processed++
-
-        // CLAIM the cart before sending: a conditional update that only matches
-        // if next_step_at is still what we read. Two overlapping runs can't both
-        // pass this, so a cart can never be double-sent. The claim moves
-        // next_step_at forward by a short lease instead of nulling it — if this
-        // worker dies mid-send, the cart becomes due again after the lease.
-        const lease = new Date(nowMs + CLAIM_LEASE_MS).toISOString()
-        const { data: claimed } = await sb.from('abandoned_carts')
-          .update({ next_step_at: lease, updated_at: nowIso })
-          .eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
-          .select('id')
-        if (!claimed || claimed.length === 0) continue // another run has it
+        // Decrement BEFORE any branch. Every path below costs subrequests.
+        clientWork--
 
         const stepNo = (cart.last_step_sent ?? 0) + 1
         const step = stepByNo[stepNo]
+
+        // ── Everything from here to the claim is pure in-memory work. Deciding
+        // whether this cart can send BEFORE claiming it means a hold costs one
+        // statement instead of two, which is what keeps a client whose
+        // templates are all pending from draining the invocation.
 
         // Step permanently missing or explicitly disabled → skip forward so the
         // sequence doesn't stall; try the next step on its own schedule.
@@ -699,7 +841,9 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
             ? nextSendInstant(nowIso, numOr(nextStep.delay_days, 1), sendHour)
             : null
           if (!patch.next_step_at) patch.status = 'completed'
-          await sb.from('abandoned_carts').update(patch).eq('id', cart.id)
+          // Conditional, so this is atomic without a preceding claim.
+          await sb.from('abandoned_carts').update(patch)
+            .eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
           continue
         }
 
@@ -711,7 +855,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           || tmplByName[step.template_name]
         if (!tmpl || tmpl.status !== 'APPROVED') {
           warnings.add(`Template "${step.template_name}" is not APPROVED — messages are being held. If Meta has already approved it, run a template sync (WhatsApp → Templates → Sync).`)
-          await holdCart(cart.id)
+          await holdCart(cart)
           continue
         }
 
@@ -744,7 +888,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
         // Sending would put "/r/…" in front of a customer AND bill us for it.
         if (linkInBody && !baseOk) {
           console.error('[cart tick] no BASE_URL — holding body-link send', { clientId, step: stepNo })
-          await holdCart(cart.id)
+          await holdCart(cart)
           continue
         }
 
@@ -765,9 +909,26 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
             clientId, step: stepNo, template: step.template_name,
           })
           warnings.add(`Template "${step.template_name}" has no dynamic URL button and no {{n}} mapped to the tracking link, so the shopper would have no way back to their cart. Map a variable to "Tracking link", or re-sync templates if the button was added on Meta.`)
-          await holdCart(cart.id)
+          await holdCart(cart)
           continue
         }
+
+        // ── This cart WILL send. Claim it now.
+        // A conditional update that only matches if next_step_at is still what
+        // we read. Two overlapping runs can't both pass this, so a cart can
+        // never be double-sent. The claim moves next_step_at forward by a short
+        // lease instead of nulling it — if this worker dies mid-send, the cart
+        // becomes due again after the lease.
+        //
+        // Deliberately the LAST thing before the send: the hold/skip branches
+        // above are idempotent and guard themselves, so they no longer pay for
+        // a claim they were only going to overwrite.
+        const lease = new Date(nowMs + CLAIM_LEASE_MS).toISOString()
+        const { data: claimed } = await sb.from('abandoned_carts')
+          .update({ next_step_at: lease, updated_at: nowIso })
+          .eq('id', cart.id).eq('status', 'open').eq('next_step_at', cart.next_step_at)
+          .select('id')
+        if (!claimed || claimed.length === 0) continue // another run has it
 
         sendBudget--
         clientSends--
@@ -778,6 +939,12 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
           variables,
           trackingUrl: cartSlug,
           urlButtonIndex,
+          // Media-headed templates REQUIRE a header component. Without these
+          // Meta rejects the send outright, and cart-recovery templates carry
+          // an image header almost always.
+          headerType: tmpl.header_type,
+          headerMediaId: tmpl.header_media_id,
+          headerMediaUrl: tmpl.header_media_url,
         })
 
         if ('error' in result) {
