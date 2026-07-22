@@ -4,65 +4,24 @@
 import { getSupabaseAdmin } from './supabase'
 import { getWAConfig, sendTemplateMessage, findDynamicUrlButtonIndex } from './whatsapp'
 import { fetchShopifyAbandonedCheckouts } from './shopify'
+import { getBaseUrl } from './baseUrl'
 
 // ── Constants ───────────────────────────────────────────────────────────────
 export const IST_TIMEZONE = 'Asia/Kolkata'
 const IST_OFFSET_MS = 5.5 * 3600000       // UTC+05:30, fixed — India has no DST
 const DAY_MS = 86400000
 
-// Safety budgets for one cron invocation (Cloudflare caps subrequests per
-// invocation — 1,000 on paid plans). Anything left over is picked up by the
-// next hourly run (carts stay claimed-and-due).
 const MAX_SENDS_PER_RUN = 80
-// Every client gets at least this many sends before the global budget is
-// allowed to run out, so one large brand can't starve the rest of the platform.
 const MIN_SENDS_PER_CLIENT = 5
 const MAX_DUE_CARTS_PER_CLIENT = 200
 // A claimed cart that crashes mid-send self-heals after this lease expires.
 const CLAIM_LEASE_MS = 2 * 3600000
-// Each cart costs subrequests whether or not it ends in a send (claim + send +
-// log + advance for a send; claim + update for a hold or a skip). The per-client
-// work budget is the send budget times this, so a client whose carts are ALL
-// being held can't quietly consume the whole invocation.
 const WORK_PER_SEND = 4
-// Shopify polling costs ~2 subrequests per checkout (a dedupe lookup plus one
-// insert/update), plus one GraphQL call per 50-checkout page. Budget it
-// explicitly so it can never consume the invocation before any message is sent.
-//
-// FIX 4: raised from 25/100. The old ceiling was a hard cap on how many carts a
-// brand could EVER capture per hour, and combined with the unsorted single-page
-// query it meant busy stores lost their newest carts permanently. Paging plus
-// the last_polled_at high-water mark makes the work proportional to real
-// volume, so the budget can be higher without risking the subrequest cap:
-// worst case here is 150 x 2 = 300 for polling + 80 x 4 = 320 for sends,
-// leaving comfortable headroom under Cloudflare's 1,000 per invocation.
 const MAX_POLL_INTAKES_PER_CLIENT = 60
 const MAX_POLL_INTAKES_PER_RUN = 150
-// Stats: how many carts we can attribute per-step sends for before the figure
-// degrades to an approximation (150 × 20 = 3,000 carts in the window).
 const STATS_COHORT_CHUNK = 150
 const STATS_MAX_COHORT_CHUNKS = 20
 
-// ── Phone normalisation ─────────────────────────────────────────────────────
-// Strip non-digits, drop trunk/IDD zeros ("0", "00", "0091"), then default a
-// bare 10-digit number to India (+91). Returns '' when the number can't be
-// messaged — the cart is still stored, just not chased.
-//
-// ── Fixes in this revision ──────────────────────────────────────────────────
-// P2a  The trunk zero was only stripped from the START OF THE STRING, so
-//      "+91 0 98765 43210" (which Shopify checkout fields routinely carry)
-//      survived as the 13-digit "9109876543210" and never matched the 12-digit
-//      "919876543210" stored from another source. Result: a duplicate cart, a
-//      duplicate message, and a recovery match that misses after the customer
-//      has already paid — the exact failure M9 was written to close, one branch
-//      over. The country-code-then-zero case is now handled explicitly.
-// P2b  `p.length === 10` prepended 91 to ANY ten-digit number. Singapore
-//      (+65 + 8 digits), Denmark and Norway are all 10 digits in E.164, so
-//      "+65 6123 4567" became "916561234567" — an invalid Indian mobile that
-//      Meta rejects on every retry until the cart expires. The digits alone
-//      cannot settle this (a Singapore number starting 6 looks exactly like an
-//      Indian mobile starting 6), but the LEADING "+" or "00" can: it means
-//      the caller has already supplied a country code, so we must not add one.
 export function normalizePhone(raw: string | null | undefined): string {
   const s = String(raw ?? '').trim()
 
@@ -79,10 +38,6 @@ export function normalizePhone(raw: string | null | undefined): string {
   p = p.replace(/^0+/, '')
   if (!p) return ''
 
-  // P2a: a trunk zero sitting BETWEEN the country code and the subscriber
-  // number ("+91 0 98765 43210" — Shopify checkout fields carry these). The
-  // leading-zero strip above never saw it. Only rewrite when what's left is a
-  // real Indian mobile, so a legitimate 13-digit foreign number is untouched.
   if (p.length === 13 && p.startsWith('910') && /^[6-9]/.test(p.slice(3))) {
     p = `91${p.slice(3)}`
   }
@@ -91,34 +46,10 @@ export function normalizePhone(raw: string | null | undefined): string {
   // didn't already carry a country code. Indian mobiles start 6-9.
   if (!explicitIntl && p.length === 10 && /^[6-9]/.test(p)) p = `91${p}`
 
-  // E.164 tops out at 15 digits. The floor differs by how much we trust the
-  // input: an explicitly international number is taken at face value (some
-  // country code + subscriber pairs are genuinely short), whereas a bare local
-  // string shorter than 11 after the India default is junk we can't dial.
   const minLen = explicitIntl ? 8 : 11
   return (p.length >= minLen && p.length <= 15) ? p : ''
 }
 
-// ── Scheduling (IST only) ───────────────────────────────────────────────────
-// Add `delayDays` to the base instant, then snap to `sendHour` (0-23) on that
-// IST calendar day. If the result is not strictly after base (delay 0 and the
-// hour already passed today), roll to the next day. Pure arithmetic — correct
-// by construction for a fixed-offset zone, verified: 10 → 10:00 IST exactly.
-// ── FIX 2 ────────────────────────────────────────────────────────────────────
-// This used to be anchored ONLY to `base`, so a back-dated intake produced a
-// next_step_at that had ALREADY PASSED. Two ways that happened in production:
-//
-//   • the hourly Shopify poll stamps `abandoned_at` = checkout.createdAt, which
-//     is up to 24h old. With delay_days = 1 the computed slot is in the past,
-//     the cart is due on the very next tick, and the shopper gets a marketing
-//     template at whatever hour that tick runs — 03:00 IST included.
-//   • a cart captured before the sequence went live is scheduled from its
-//     original abandonment when consent/config finally arrives, which can be
-//     days back.
-//
-// `notBeforeIso` is a FLOOR (defaults to now). If the ideal slot has passed we
-// roll forward in WHOLE DAYS, so the send still lands exactly on the brand's
-// IST send hour — just the next occurrence of it.
 export function nextSendInstant(
   baseIso: string,
   delayDays: number,
@@ -749,7 +680,7 @@ export async function runCartAbandonmentTick(nowIso = new Date().toISOString()):
   // M1: NEXT_PUBLIC_* is inlined at BUILD time. If it wasn't present in the
   // build environment and BASE_URL isn't set at runtime, this is '' — and a
   // `__link__` body variable would ship "/r/slug.cartid" to a real customer.
-  const base = (process.env.NEXT_PUBLIC_BASE_URL || process.env.BASE_URL || '').replace(/\/+$/, '')
+  const base = getBaseUrl()
   const baseOk = /^https?:\/\//i.test(base)
   if (!baseOk) {
     warnings.add('BASE_URL is not set — messages that carry the link in the message body are being held. Set BASE_URL (or NEXT_PUBLIC_BASE_URL at build time) to your public origin.')
