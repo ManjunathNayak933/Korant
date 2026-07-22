@@ -73,6 +73,18 @@ export default function AdminPage() {
     <div style={{ background: '#0d0d0d', minHeight: '100vh' }}>
       <DashboardNav user={user || { email: '', role: 'admin' }} brandName="Admin" />
 
+      {/* B2: base-URL health — a misconfigured origin silently breaks Shopify
+          order/checkout capture, so make it loud and impossible to miss. */}
+      {stats?.configHealth && !stats.configHealth.ok && (
+        <div style={{ background: '#2a1408', borderBottom: '1px solid #7a3a12', padding: '12px 24px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <span style={{ color: '#e0902a', fontSize: 16, lineHeight: '20px' }}>⚠</span>
+          <div style={{ fontSize: 12.5, color: '#f0c890', lineHeight: 1.6 }}>
+            <strong style={{ color: '#f4b063' }}>Deployment config issue — Shopify captures may be silently failing.</strong><br/>
+            {stats.configHealth.message}
+          </div>
+        </div>
+      )}
+
       {/* Platform stats */}
       {stats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', borderBottom: '0.5px solid #1e1e1e', padding: '0' }}>
