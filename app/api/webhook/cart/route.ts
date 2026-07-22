@@ -122,5 +122,20 @@ export async function POST(request: NextRequest) {
     abandonedAt: body.abandoned_at || body.abandonedAt || null,
   })
 
+  // ── B7: honest status codes ──────────────────────────────────────────────
+  // This route used to return 200 even when the insert failed, so a provider's
+  // webhook log showed "delivered" for a cart that was never stored and never
+  // retried. Map the outcome:
+  //   • stored            → 200
+  //   • no_contact        → 200 (real no-op: no phone/email yet — retry can't help)
+  //   • any other reason  → 502 (a real DB/config error — let the sender retry)
+  if (!result.stored && result.reason && result.reason !== 'no_contact') {
+    console.error('[webhook/cart] intake failed', {
+      clientId: client.id, externalId: body.external_id ?? body.cart_id ?? null,
+      reason: result.reason,
+    })
+    return NextResponse.json(result, { status: 502, headers: cors(request) })
+  }
+
   return NextResponse.json(result, { headers: cors(request) })
 }
