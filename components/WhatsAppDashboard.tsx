@@ -12,7 +12,7 @@ interface Campaign { id: string; name: string; template_name: string; list_name:
 interface Props { clientId: string; campaigns: { id: string; name: string }[]; baseUrl: string; month?: string }
 
 const STATUS_COLOR: Record<string, string> = {
-  APPROVED: 'var(--green)', PENDING: 'var(--amber)', REJECTED: 'var(--red)', PAUSED: 'var(--text-dim)',
+  APPROVED: 'var(--green)', PENDING: 'var(--amber)', REJECTED: 'var(--red)', FAILED: 'var(--red)', PAUSED: 'var(--text-dim)',
   sent: 'var(--green)', sending: 'var(--amber)', draft: 'var(--text-dim)', scheduled: 'var(--blue)', failed: 'var(--red)',
 }
 
@@ -506,6 +506,11 @@ export default function WhatsAppDashboard({ clientId, campaigns, baseUrl, month 
                     </span>
                   )}
                     {t.status === 'APPROVED' && <span style={{ fontSize: 10, color: 'var(--green)', marginLeft: 'auto' }}>Ready to use</span>}
+                    {(t.status === 'FAILED' || t.status === 'REJECTED') && (
+                      <span style={{ fontSize: 10, color: 'var(--red)', marginLeft: 'auto', textAlign: 'right', lineHeight: 1.4 }}>
+                        Can’t send — {t.status === 'FAILED' ? 'submission to Meta failed' : 'rejected by Meta'}. A sync won’t fix it; edit &amp; resubmit or delete.
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}
