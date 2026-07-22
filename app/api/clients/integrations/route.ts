@@ -69,6 +69,17 @@ function buildPayload(
     generic_webhook_url: `${base}/api/webhook/generic?clientId=${userId}`,
     webhook_secret: key,
 
+    // Abandoned-cart intake for the SAME non-native checkouts. This is a SECOND,
+    // SEPARATE call from generic_webhook_url above — the order webhook fires when
+    // a purchase COMPLETES, this one fires when a checkout is ABANDONED. Both are
+    // required for cart recovery on a third-party checkout: without this endpoint
+    // the platform never learns a cart exists, so nothing is ever chased. Unlike
+    // the order endpoint, this one carries the key in the URL as ?k= (it is
+    // posted from server-side checkout hooks, not a browser, so Referer leakage
+    // isn't a concern here). Fire both with the SAME external_id per checkout so
+    // a completed order matches the exact cart it abandoned.
+    cart_webhook_url: `${base}/api/webhook/cart?cid=${userId}&k=${key}`,
+
     // Optional auto-codes status. Domain is auto-captured from the first order;
     // token is exposed only as a boolean, never its value.
     has_shopify_token: !!data?.shopify_token,
