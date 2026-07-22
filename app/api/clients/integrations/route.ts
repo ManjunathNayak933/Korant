@@ -11,6 +11,7 @@ export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { getBaseUrl } from '@/lib/baseUrl'
 
 // 48 hex chars (24 random bytes) — unguessable, URL-safe, not printed anywhere
 // public (unlike the clientId, which is in the storefront beacon snippet).
@@ -51,7 +52,7 @@ function buildPayload(
   key: string,
   data: { shopify_domain?: string | null; shopify_token?: string | null; razorpay_key_id?: string | null; razorpay_key_secret?: string | null } | null,
 ) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
+  const base = getBaseUrl()
   return {
     // Existing flags — kept for backward compatibility (CouponStatusHint, etc.).
     // `shopify` = discount automation ready (domain + token).
