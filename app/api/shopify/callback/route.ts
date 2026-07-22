@@ -15,6 +15,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { registerShopifyOrderWebhooks, registerShopifyCheckoutWebhooks } from '@/lib/shopify'
+import { getBaseUrl } from '@/lib/baseUrl'
 
 async function hmacHex(data: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -41,7 +42,9 @@ function timingSafeEqual(a: string, b: string): boolean {
 export async function GET(request: NextRequest) {
   const url = new URL(request.url)
   const params = url.searchParams
-  const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://www.microkorant.in'
+  // B2: runtime BASE_URL wins, so the webhooks below register against the real
+  // deployment even when NEXT_PUBLIC_BASE_URL was absent at build time.
+  const base = getBaseUrl()
   const apiKey = process.env.SHOPIFY_API_KEY
   const secret = process.env.SHOPIFY_API_SECRET
 
