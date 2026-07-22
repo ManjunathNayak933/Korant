@@ -178,6 +178,14 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   //   exactly what /api/webhook/shopify reads (noteAttributes['mk_slug']).
   // beaconFire: pageview pixel to /api/beacon (GET image — sends cookies,
   //   needs no CORS). The route reads `cid`, `e`, `p`.
+  //   FIRES ONCE PER SESSION, not per page: a browse (category → cart →
+  //   category → checkout) is ONE visit for journey/retention purposes, so one
+  //   touchpoint is enough. sessionStorage clears on tab close, so a genuine
+  //   later return starts a new session and fires again — the granularity
+  //   visitor_first_touch.total_visits and the journey/retention reports
+  //   actually want. (Previously every pageview fired, inflating both the row
+  //   count and the returning-visitor numbers.) If sessionStorage is blocked we
+  //   fall back to firing, so data is never silently lost.
   const refCapture = `  function gc(n){var m=document.cookie.match('(^|;)\\\\s*'+n+'=([^;]+)');return m?m[2]:null}
   function sc(n,v,days){var e=new Date();e.setTime(e.getTime()+days*864e5);
     document.cookie=n+'='+v+';path=/;expires='+e.toUTCString()+';SameSite=Lax'}
@@ -191,7 +199,8 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   mkAttach();window.addEventListener('pageshow',mkAttach);`
 
   const beaconFire = `
-  new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=pageview&p='+encodeURIComponent(location.pathname)+'&t='+Date.now();`
+  var mkFire=function(){new Image().src='${BASE_URL}/api/beacon?cid=${CID}&e=pageview&p='+encodeURIComponent(location.pathname)+'&t='+Date.now()};
+  try{if(!sessionStorage.getItem('mk_v')){sessionStorage.setItem('mk_v','1');mkFire()}}catch(e){mkFire()}`
 
   const snippet = `<!-- MicroKorant tracking — paste just before </body> -->
 <script>
