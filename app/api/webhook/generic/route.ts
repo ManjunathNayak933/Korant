@@ -14,27 +14,19 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { attributeSale, reverseSale } from '@/lib/attribution'
 import { recoverCartsForOrder, reverseCartRecovery } from '@/lib/cart-abandonment'
+import { authenticateWebhook } from '@/lib/webhookAuth'
 
 export async function POST(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const clientId = searchParams.get('clientId')
-  if (!clientId) return NextResponse.json({ error: 'clientId required' }, { status: 400 })
+  // Secret via x-webhook-secret header OR ?k= in the URL; client id as
+  // ?clientId= or ?cid=. (QC B8 — matches the cart endpoint now.)
+  const auth = await authenticateWebhook(request)
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const clientId = auth.clientId!
 
   const body = await request.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
 
-  // Verify secret
   const sb = getSupabaseAdmin()
-  const { data: client } = await sb.from('clients').select('webhook_secret').eq('id', clientId).maybeSingle()
-  if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
-
-  const webhookSecret = request.headers.get('x-webhook-secret')
-  if (!client.webhook_secret) {
-    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 401 })
-  }
-  if (webhookSecret !== client.webhook_secret) {
-    return NextResponse.json({ error: 'Invalid webhook secret' }, { status: 401 })
-  }
 
   // orderId is REQUIRED
   if (!body.orderId || String(body.orderId).trim() === '') {
