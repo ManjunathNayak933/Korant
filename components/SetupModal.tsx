@@ -656,7 +656,14 @@ yourSignupApi().then(function(r) {
               <div style={{ display:'flex', gap:8, marginTop:14, flexWrap:'wrap', alignItems:'center' }}>
                 <Btn primary disabled={checking} onClick={()=>verify('webhook')}
                   label={checking?'Checking...':'Verify (checks recent orders)'}/>
-                {!ob.webhook_done&&!confirmStep&&(
+                {/* B7: orders arriving does NOT mean carts are. A third-party
+                    checkout must POST to the cart endpoint separately, so give
+                    that its own check instead of letting the orders tick imply
+                    cart capture works. */}
+                {checkoutType==='thirdparty' && (
+                  <Btn primary={false} disabled={checking} onClick={()=>verify('cart')}
+                    label={checking?'Checking...':'Verify carts (checks recent carts)'}/>
+                )}                {!ob.webhook_done&&!confirmStep&&(
                   <Btn disabled={false} onClick={()=>requestConfirm('webhook')} label="Mark as done"/>
                 )}
                 {confirmStep==='webhook'&&(
