@@ -584,7 +584,7 @@ yourSignupApi().then(function(r) {
                     </button>
                   </div>
 
-                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>2 · Secret — send in the <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>x-webhook-secret</code> header</label>
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>2 · Secret — send as the <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>x-webhook-secret</code> header, or as <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>?k=</code> in the URL — both work</label>
                   <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:8 }}>
                     <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect: secretShown?'all':'none', wordBreak:'break-all', paddingRight:110, lineHeight:1.5 }}>
                       {conn?.webhook_secret ? (secretShown ? conn.webhook_secret : '•'.repeat(24)) : 'Loading…'}
@@ -628,7 +628,7 @@ yourSignupApi().then(function(r) {
                     A different call from A, sent the moment someone starts checkout and leaves without paying. Skip this and cart-recovery messages have nothing to send. When the shopper later buys, endpoint A (with the same <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>external_id</code>) stops the sequence automatically.
                   </p>
 
-                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>4 · Endpoint URL (POST) — <span style={{ color:'var(--text-secondary)' }}>key is in the URL here, not a header</span></label>
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>4 · Endpoint URL (POST) — <span style={{ color:'var(--text-secondary)' }}>key is already in the URL (or send the <code style={{ fontFamily:'var(--font-mono)' }}>x-webhook-secret</code> header instead)</span></label>
                   <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
                     <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
                       {conn?.cart_webhook_url || 'Loading…'}
