@@ -27,7 +27,7 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   // plus a one-click "Connect Shopify" (OAuth) to enable auto-created codes. No
   // token-pasting — the OAuth callback stores the token for us.
   const [shopDomain,  setShopDomain]  = useState('')
-  const [conn,        setConn]        = useState<{ webhook_url?: string; generic_webhook_url?: string; webhook_secret?: string; has_shopify_domain?: boolean; has_shopify_token?: boolean; shopify_domain?: string } | null>(null)
+  const [conn,        setConn]        = useState<{ webhook_url?: string; generic_webhook_url?: string; cart_webhook_url?: string; webhook_secret?: string; has_shopify_domain?: boolean; has_shopify_token?: boolean; shopify_domain?: string } | null>(null)
   const [urlCopied,   setUrlCopied]   = useState(false)
   const [connecting,  setConnecting]  = useState(false)
   const [showReconnect, setShowReconnect] = useState(false)
@@ -40,6 +40,8 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   const [secretCopied, setSecretCopied] = useState(false)
   const [genCopied, setGenCopied] = useState(false)
   const [payloadCopied, setPayloadCopied] = useState(false)
+  const [cartUrlCopied, setCartUrlCopied] = useState(false)
+  const [cartPayloadCopied, setCartPayloadCopied] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
 
   useEffect(() => { setCheckResult(null); setConfirmStep(null) }, [page])
@@ -78,7 +80,19 @@ export default function SetupModal({ user, onClose, onSave }: Props) {
   "orderId": "ORDER-12345",
   "orderValue": 1299,
   "discountCode": "PARTNER10",
-  "mkSlug": ""
+  "mkSlug": "",
+  "external_id": "CART-789"
+}`
+
+  // Abandoned-cart body. `external_id` here MUST match the one sent on the order
+  // above so a completed purchase links back to the exact cart it abandoned.
+  const cartPayload = `{
+  "phone": "+919876543210",
+  "opted_in": true,
+  "cart_value": 1299,
+  "currency": "INR",
+  "recovery_url": "https://yourstore.com/checkout/resume?token=…",
+  "external_id": "CART-789"
 }`
 
   // Count only _done (NOT _skipped) for progress
@@ -539,8 +553,16 @@ yourSignupApi().then(function(r) {
               {checkoutType==='thirdparty' && (
                 <div>
                   <p style={{ fontSize:13, color:'var(--text-muted)', lineHeight:1.7, marginBottom:16 }}>
-                    Your checkout takes payment outside Shopify's native checkout, so orders never reach Shopify as paid — connecting Shopify won't capture them. Instead, have your checkout provider POST every completed order (and refund) to the endpoint below. Most providers set this up from their dashboard or via their support team.
+                    Your checkout takes payment outside Shopify's native checkout, so nothing reaches Shopify — connecting Shopify won't capture it. Instead, have your checkout provider POST to the two endpoints below. Most providers set this up from their dashboard or via their support team.
                   </p>
+
+                  {/* Two required calls, at two different moments in the journey.
+                      A = order completed (attribution). B = cart abandoned
+                      (recovery). B is a distinct endpoint from A; without it,
+                      cart abandonment has nothing to work on. */}
+                  <div style={{ fontSize:12, fontWeight:600, color:'var(--text-primary)', marginBottom:6, paddingBottom:6, borderBottom:'0.5px solid var(--border2)' }}>
+                    A · Completed orders <span style={{ fontWeight:400, color:'var(--text-dim)' }}>— fire when a purchase completes (required for sale tracking)</span>
+                  </div>
 
                   <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>1 · Endpoint URL (POST)</label>
                   <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
@@ -583,6 +605,41 @@ yourSignupApi().then(function(r) {
                   </div>
                   <div style={{ fontSize:11, color:'var(--text-dim)', lineHeight:1.6 }}>
                     <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>orderId</code> is required (any unique id — it dedupes webhook retries). Include <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>discountCode</code> or <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>mkSlug</code> so we can credit the partner. For a refund or cancellation, send the same <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>orderId</code> with <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>{'"eventType":"refund"'}</code>.
+                  </div>
+
+                  {/* ── Part B — abandoned carts ─────────────────────────────
+                      Separate endpoint, separate moment. Required for the Cart
+                      Abandonment feature on any non-native checkout: Shopify
+                      never sees these checkouts, so this POST is the only way a
+                      cart is ever captured and chased. */}
+                  <div style={{ fontSize:12, fontWeight:600, color:'var(--text-primary)', margin:'22px 0 6px', paddingBottom:6, borderBottom:'0.5px solid var(--border2)' }}>
+                    B · Abandoned carts <span style={{ fontWeight:400, color:'var(--text-dim)' }}>— fire when a checkout is abandoned (required for cart recovery)</span>
+                  </div>
+                  <p style={{ fontSize:11, color:'var(--text-dim)', lineHeight:1.6, marginBottom:12 }}>
+                    A different call from A, sent the moment someone starts checkout and leaves without paying. Skip this and cart-recovery messages have nothing to send. When the shopper later buys, endpoint A (with the same <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>external_id</code>) stops the sequence automatically.
+                  </p>
+
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>4 · Endpoint URL (POST) — <span style={{ color:'var(--text-secondary)' }}>key is in the URL here, not a header</span></label>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
+                    <div style={{ fontFamily:'var(--font-mono)', fontSize:12, color:'var(--amber)', userSelect:'all', wordBreak:'break-all', paddingRight:54, lineHeight:1.5 }}>
+                      {conn?.cart_webhook_url || 'Loading…'}
+                    </div>
+                    <button onClick={()=>{ if(conn?.cart_webhook_url){ copyToClipboard(conn.cart_webhook_url); setCartUrlCopied(true); setTimeout(()=>setCartUrlCopied(false),2000) } }}
+                      style={{ position:'absolute', top:9, right:9, background:'var(--amber)', border:'none', color:'#0d0d0d', fontWeight:500, borderRadius:4, padding:'4px 10px', fontSize:11, cursor:'pointer' }}>
+                      {cartUrlCopied ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+
+                  <label style={{ fontSize:10, textTransform:'uppercase', letterSpacing:'0.4px', color:'var(--text-dim)', display:'block', marginBottom:4 }}>5 · Body — JSON they should send per abandoned cart</label>
+                  <div style={{ position:'relative', background:'var(--surface2)', border:'0.5px solid var(--border2)', borderRadius:8, padding:'10px 12px', marginBottom:8 }}>
+                    <pre style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-muted)', margin:0, whiteSpace:'pre-wrap', lineHeight:1.5 }}>{cartPayload}</pre>
+                    <button onClick={()=>{ copyToClipboard(cartPayload); setCartPayloadCopied(true); setTimeout(()=>setCartPayloadCopied(false),2000) }}
+                      style={{ position:'absolute', top:6, right:6, background:'var(--surface)', border:'0.5px solid var(--border2)', color:'var(--text-dim)', borderRadius:4, padding:'2px 7px', fontSize:10, cursor:'pointer' }}>
+                      {cartPayloadCopied ? '✓ Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-dim)', lineHeight:1.6 }}>
+                    <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>recovery_url</code> is the link the shopper is sent back to — it must resume their cart. <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>opted_in</code> must be <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>true</code> or they can't be messaged. Use the same <code style={{ fontFamily:'var(--font-mono)', color:'var(--text-secondary)' }}>external_id</code> you send on the order in A. Cart recovery also needs WhatsApp connected and a Meta-approved template — see the WhatsApp tab.
                   </div>
                 </div>
               )}
