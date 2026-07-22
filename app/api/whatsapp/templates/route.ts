@@ -127,8 +127,15 @@ export async function POST(request: NextRequest) {
         .update({ meta_template_id: metaRes.id, status: 'PENDING' })
         .eq('id', tmpl.id)
     } catch (e: any) {
-      // Don't fail — template saved locally, Meta submission failed
-      return NextResponse.json({ ...tmpl, meta_warning: e.message }, { status: 201 })
+      // B5: Meta submission failed. The row must NOT stay at PENDING — the cart
+      // tick holds every send on `status !== 'APPROVED'`, and there is nothing
+      // at Meta for a later sync to ever flip to APPROVED, so those carts would
+      // wait forever. Mark it FAILED: clearly unusable, shown with a reason in
+      // the UI, and easy to resubmit or delete.
+      await sb.from('whatsapp_templates')
+        .update({ status: 'FAILED' })
+        .eq('id', tmpl.id)
+      return NextResponse.json({ ...tmpl, status: 'FAILED', meta_warning: e.message }, { status: 201 })
     }
   } else if (config) {
     return NextResponse.json({
